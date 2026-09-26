@@ -11,7 +11,6 @@ from mpcs.config import (
     synthetic_experiment_config,
 )
 
-
 _DATA_ROOT = Path(__file__).resolve().parents[2] / "dataset"
 BUILTIN_DATASETS = ("synthetic", "chengdu", "shanghai", "shanghai16")
 
@@ -85,7 +84,7 @@ def dataset_preset(
         stations=replace(
             base.stations,
             reference_source_file=source_files[0],
-            station_bounds_inset_ratio=0.275,
+            station_bounds_inset_ratio=0.05,
         ),
         dataset=replace(
             base.dataset,

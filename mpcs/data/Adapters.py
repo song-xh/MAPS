@@ -5,19 +5,20 @@ simulation clock.
 """
 
 from __future__ import annotations
-from dataclasses import asdict, replace
 
-from collections.abc import Iterable, Mapping
-from contextlib import nullcontext
 import json
 import random
+from collections.abc import Iterable, Mapping
+from contextlib import nullcontext
+from dataclasses import asdict, replace
 from pathlib import Path
 from typing import Protocol
 
 import networkx as nx
+import numpy as np
 
 from mpcs.config import DatasetSplit, ExperimentConfig
-from mpcs.core.Domain import Parcel, ParcelType, Station, VehicleSnapshot
+from mpcs.core.Domain import GeoPoint, Parcel, ParcelType, Station, VehicleSnapshot
 from mpcs.core.Framework import (
     PreparedEnvironment,
     PreparedEnvironmentSplits,
@@ -27,6 +28,8 @@ from mpcs.core.Framework import (
     _partition_seed_for_split,
 )
 from mpcs.core.GraphUtils import (
+    LegacyGridReferenceBounds,
+    LegacyStationGridAudit,
     Region,
     RegionIndex,
     RoadNetwork,
@@ -194,18 +197,8 @@ class ParcelV2PreparationAdapter:
                     for order in reference_orders
                     for point in (order.pickup_location, order.dropoff_location)
                 )
-                region_index, station_index, grid_audit = (
-                    build_legacy_station_grid(
-                        road_network=road_network,
-                        reference_points=reference_points,
-                        parts=config.stations.station_grid_parts,
-                        inset_ratio=(
-                            config.stations.station_bounds_inset_ratio
-                        ),
-                        max_station_map_distance_m=(
-                            config.dataset.max_map_match_distance_m
-                        ),
-                    )
+                region_index, station_index, grid_audit = _build_order_station_grid(
+                    config, road_network, reference_points
                 )
                 result.update(regions=len(region_index.regions), grid_audit=asdict(grid_audit))
             with _stage(
@@ -279,16 +272,8 @@ class ParcelV2PreparationAdapter:
                     for order in reference_orders
                     for point in (order.pickup_location, order.dropoff_location)
                 )
-                region_index, station_index, grid_audit = (
-                    build_legacy_station_grid(
-                        road_network=road_network,
-                        reference_points=reference_points,
-                        parts=config.stations.station_grid_parts,
-                        inset_ratio=config.stations.station_bounds_inset_ratio,
-                        max_station_map_distance_m=(
-                            config.dataset.max_map_match_distance_m
-                        ),
-                    )
+                region_index, station_index, grid_audit = _build_order_station_grid(
+                    config, road_network, reference_points
                 )
                 result.update(regions=len(region_index.regions), grid_audit=asdict(grid_audit))
             with _stage(
@@ -328,6 +313,38 @@ class ParcelV2PreparationAdapter:
             if road_network is not None:
                 road_network.close()
             raise
+
+
+def _build_order_station_grid(
+    config: ExperimentConfig,
+    road_network: RoadNetwork,
+    reference_points: tuple[GeoPoint, ...],
+) -> tuple[RegionIndex, StationIndex, LegacyStationGridAudit]:
+    if config.dataset.road_parser == "osm-shanghai-v1":
+        longitudes = np.asarray([point.longitude_deg for point in reference_points])
+        latitudes = np.asarray([point.latitude_deg for point in reference_points])
+        source_bounds = (
+            float(np.quantile(longitudes, 0.01)),
+            float(np.quantile(latitudes, 0.01)),
+            float(np.quantile(longitudes, 0.99)),
+            float(np.quantile(latitudes, 0.99)),
+        )
+        return build_legacy_station_grid(
+            road_network=road_network,
+            reference_bounds=LegacyGridReferenceBounds(
+                reference_point_count=len(reference_points), source_bounds=source_bounds
+            ),
+            parts=config.stations.station_grid_parts,
+            inset_ratio=config.stations.station_bounds_inset_ratio,
+            max_station_map_distance_m=None,
+        )
+    return build_legacy_station_grid(
+        road_network=road_network,
+        reference_points=reference_points,
+        parts=config.stations.station_grid_parts,
+        inset_ratio=config.stations.station_bounds_inset_ratio,
+        max_station_map_distance_m=config.dataset.max_map_match_distance_m,
+    )
 
 
 def _validate_parcel_v2_metadata(config: ExperimentConfig) -> None:
@@ -893,7 +910,7 @@ def _prepare_from_canonical_context(
         derive_point_selection,
         load_canonical_context,
     )
-    from mpcs.experiments.specs import ExperimentPoint, WINDOW_ALL_WORKLOAD
+    from mpcs.experiments.specs import WINDOW_ALL_WORKLOAD, ExperimentPoint
 
     if canonical_context is None:
         assert canonical_context_path is not None

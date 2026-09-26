@@ -33,6 +33,12 @@ def test_paper_replay_contains_actual_second_price_and_receipts():
     assert isclose(summary["profit"], sum(summary["profit_by_platform"].values()))
     assert len(run["steps"]) == 5 * len(run["batches"])
     assert run["steps"][-1]["metrics"]["profit"] == summary["profit"]
+    geography = run["geography"]
+    assert geography["node_count"] == 2
+    assert geography["arc_count"] == 2
+    assert geography["segments"] == [[104.0, 30.7, 104.001, 30.7]]
+    assert {station["node"] for station in geography["stations"]} == {"n0", "n1"}
+    assert len(geography["stations"]) == 2
 
     multi_bid_lots = []
     for step in run["steps"]:

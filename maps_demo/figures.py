@@ -8,7 +8,6 @@ from typing import Any
 
 import plotly.graph_objects as go
 
-
 PLATFORM_COLORS = (
     "#1677ff", "#f59e0b", "#10b981", "#a855f7",
     "#ef4444", "#06b6d4", "#d97706", "#6366f1",
@@ -52,12 +51,16 @@ def _spread(points: list[tuple[str, list[float]]]) -> dict[str, tuple[float, flo
     return located
 
 
-def map_figure(run: dict[str, Any] | None, index: int, focus: str | None, selected: str | None) -> go.Figure:
-    figure = go.Figure()
-    if not run:
-        figure.add_annotation(text="运行一个场景后，包裹与车辆会出现在这里", showarrow=False,
-                              font=dict(size=16, color="#94a3b8"))
-        return _theme(figure, height=525)
+def map_static_trace_count(run: dict[str, Any], layers: list[str] | None) -> int:
+    active = set(layers) if layers is not None else {"road", "station"}
+    geography = run.get("geography", {})
+    return int("road" in active and bool(geography.get("segments"))) + int(
+        "station" in active and bool(geography.get("stations"))
+    )
+
+
+def map_dynamic_traces(run: dict[str, Any], index: int, focus: str | None,
+                       selected: str | None) -> list[go.Scatter]:
     step = run["steps"][index]
     platforms = run["meta"]["platforms"]
     catalog = run["catalog"]
@@ -70,63 +73,107 @@ def map_figure(run: dict[str, Any] | None, index: int, focus: str | None, select
     point_items = [(f"parcel:{pid}", item["point"]) for pid, item in visible.items()]
     point_items += [(f"vehicle:{vid}", item["point"]) for vid, item in state["vehicles"].items()]
     positions = _spread(point_items)
+    links = {(cross, highlighted): ([], []) for cross in (False, True)
+             for highlighted in (False, True)}
     if step["stage"] in {"local", "auction", "settlement"}:
         for parcel_id, detail in step["details"].items():
             if parcel_id not in visible:
                 continue
-            links = detail.get("local_matches", ())
+            matches = detail.get("local_matches", ())
             if step["stage"] in {"auction", "settlement"} and detail.get("serving_receipt"):
-                links = [detail["serving_receipt"]]
-            for link in links:
-                vehicle_id = link["vehicle_id"]
+                matches = [detail["serving_receipt"]]
+            for match in matches:
+                vehicle_id = match["vehicle_id"]
                 if f"vehicle:{vehicle_id}" not in positions:
                     continue
+                cross = state["vehicles"][vehicle_id]["platform"] != catalog[parcel_id]["origin"]
+                xs, ys = links[(cross, parcel_id == selected)]
                 x0, y0 = positions[f"parcel:{parcel_id}"]
                 x1, y1 = positions[f"vehicle:{vehicle_id}"]
-                cross = state["vehicles"][vehicle_id]["platform"] != catalog[parcel_id]["origin"]
-                figure.add_trace(go.Scatter(
-                    x=[x0, x1], y=[y0, y1], mode="lines", showlegend=False,
-                    line=dict(color="#f97316" if cross else "#10b981", width=3 if parcel_id == selected else 1.8,
-                              dash="dot" if cross else "solid"),
-                    hoverinfo="skip",
-                ))
+                xs.extend((x0, x1, None))
+                ys.extend((y0, y1, None))
+    traces: list[go.Scatter] = []
+    for cross in (False, True):
+        for highlighted in (False, True):
+            xs, ys = links[(cross, highlighted)]
+            traces.append(go.Scatter(
+                x=xs, y=ys, mode="lines", showlegend=False,
+                line=dict(color="#f97316" if cross else "#10b981",
+                          width=3 if highlighted else 1.8,
+                          dash="dot" if cross else "solid"),
+                hoverinfo="skip",
+            ))
     for platform in platforms:
         parcel_ids = [pid for pid, item in visible.items() if item["origin"] == platform]
-        if parcel_ids:
-            figure.add_trace(go.Scatter(
-                x=[positions[f"parcel:{pid}"][0] for pid in parcel_ids],
-                y=[positions[f"parcel:{pid}"][1] for pid in parcel_ids],
-                mode="markers+text", name=f"{platform} 包裹", legendgroup=platform,
-                text=[visible[pid]["label"] if pid == selected else "" for pid in parcel_ids],
-                textposition="top center", textfont=dict(size=11, color="#0f172a"),
-                marker=dict(
-                    symbol="circle", size=[19 if pid == selected else 13 for pid in parcel_ids],
-                    color=color_for(platform, platforms),
-                    opacity=[1 if state["parcels"].get(pid, {}).get("status") not in {"expired"} else 0.35 for pid in parcel_ids],
-                    line=dict(color="#0f172a" if platform == focus else "white", width=2.3 if platform == focus else 1),
-                ),
-                customdata=[["parcel", pid, visible[pid]["label"]] for pid in parcel_ids],
-                hovertemplate="<b>%{customdata[2]}</b><br>%{customdata[1]}<extra></extra>",
-            ))
+        traces.append(go.Scatter(
+            x=[positions[f"parcel:{pid}"][0] for pid in parcel_ids],
+            y=[positions[f"parcel:{pid}"][1] for pid in parcel_ids],
+            mode="markers+text", name=f"{platform} 包裹", legendgroup=platform,
+            showlegend=bool(parcel_ids),
+            text=[visible[pid]["label"] if pid == selected else "" for pid in parcel_ids],
+            textposition="top center", textfont=dict(size=11, color="#0f172a"),
+            marker=dict(
+                symbol="circle", size=[19 if pid == selected else 13 for pid in parcel_ids],
+                color=color_for(platform, platforms),
+                opacity=[1 if state["parcels"].get(pid, {}).get("status") != "expired" else 0.35 for pid in parcel_ids],
+                line=dict(color="#0f172a" if platform == focus else "white", width=2.3 if platform == focus else 1),
+            ),
+            customdata=[["parcel", pid, visible[pid]["label"]] for pid in parcel_ids],
+            hovertemplate="<b>%{customdata[2]}</b><br>%{customdata[1]}<extra></extra>",
+        ))
         vehicle_ids = [vid for vid, item in state["vehicles"].items() if item["platform"] == platform]
-        if vehicle_ids:
-            figure.add_trace(go.Scatter(
-                x=[positions[f"vehicle:{vid}"][0] for vid in vehicle_ids],
-                y=[positions[f"vehicle:{vid}"][1] for vid in vehicle_ids],
-                mode="markers", name=f"{platform} 车辆", legendgroup=platform, showlegend=False,
-                marker=dict(symbol="square", size=13, color=color_for(platform, platforms),
-                            line=dict(color="#0f172a" if platform == focus else "white", width=2)),
-                customdata=[["vehicle", vid] for vid in vehicle_ids],
-                hovertemplate="<b>%{customdata[1]}</b><extra></extra>",
-            ))
+        traces.append(go.Scatter(
+            x=[positions[f"vehicle:{vid}"][0] for vid in vehicle_ids],
+            y=[positions[f"vehicle:{vid}"][1] for vid in vehicle_ids],
+            mode="markers", name=f"{platform} 车辆", legendgroup=platform, showlegend=False,
+            marker=dict(symbol="square", size=13, color=color_for(platform, platforms),
+                        line=dict(color="#0f172a" if platform == focus else "white", width=2)),
+            customdata=[["vehicle", vid] for vid in vehicle_ids],
+            hovertemplate="<b>%{customdata[1]}</b><extra></extra>",
+        ))
+    return traces
+
+
+def map_figure(run: dict[str, Any] | None, index: int, focus: str | None,
+               selected: str | None, layers: list[str] | None = None) -> go.Figure:
+    figure = go.Figure()
+    if not run:
+        figure.add_annotation(text="运行一个场景后，包裹与车辆会出现在这里", showarrow=False,
+                              font=dict(size=16, color="#94a3b8"))
+        return _theme(figure, height=525)
+    active_layers = set(layers) if layers is not None else {"road", "station"}
+    geography = run.get("geography", {})
+    if "road" in active_layers and geography.get("segments"):
+        road_x: list[float | None] = []
+        road_y: list[float | None] = []
+        for x0, y0, x1, y1 in geography["segments"]:
+            road_x.extend((x0, x1, None))
+            road_y.extend((y0, y1, None))
+        figure.add_trace(go.Scattergl(
+            x=road_x, y=road_y, mode="lines", name="处理后路网",
+            legendgroup="geography", showlegend=False, hoverinfo="skip",
+            line=dict(color="#b8c8d8", width=1.3),
+        ))
+    if "station" in active_layers and geography.get("stations"):
+        stations = geography["stations"]
+        station_size = 8 if len(stations) > 20 else 12
+        figure.add_trace(go.Scattergl(
+            x=[item["point"][0] for item in stations],
+            y=[item["point"][1] for item in stations],
+            mode="markers", name="Station", legendgroup="geography", showlegend=False,
+            marker=dict(symbol="diamond", size=station_size, color="#254d88", opacity=0.8,
+                        line=dict(color="white", width=0.8)),
+            customdata=[[item["id"], item["node"]] for item in stations],
+            hovertemplate="Station %{customdata[0]}<br>路网节点 %{customdata[1]}<extra></extra>",
+        ))
+    for trace in map_dynamic_traces(run, index, focus, selected):
+        figure.add_trace(trace)
     figure.update_xaxes(showgrid=True, gridcolor="#e9eff6", zeroline=False, title="经度 / 显示错位")
     figure.update_yaxes(showgrid=True, gridcolor="#e9eff6", zeroline=False, title="纬度 / 显示错位",
                         scaleanchor="x", scaleratio=1)
     figure.update_layout(
-        dragmode="pan", uirevision="maps-location", hovermode="closest",
-        annotations=[dict(x=1, y=1.04, xref="paper", yref="paper", showarrow=False,
-                          text="○ 包裹    ■ 车辆    ─ 本地匹配    ··· 跨平台匹配",
-                          font=dict(size=11, color="#64748b"), xanchor="right")],
+        dragmode="pan", uirevision=run["meta"]["dataset"], hovermode="closest",
+        legend=dict(entrywidth=115, entrywidthmode="pixels", y=-0.07),
     )
     return _theme(figure, height=525, margin=38)
 

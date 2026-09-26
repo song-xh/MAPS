@@ -9,7 +9,7 @@ python -m pip install -e ".[demo]"
 python -m maps_demo.app
 ```
 
-打开 `http://127.0.0.1:8050`。默认 synthetic 场景无需下载数据。Simulation 可调整平台数、各平台分池策略、包裹/车辆规模、物理帧间隔、本地匹配与跨平台机制；Inspection 按阶段回放并点选包裹查看候选、报价和结算；Analysis 展示本次产物的分配、生命周期、平台收益和合作流向。每次运行的回放保存在 `output/maps-demo/latest.json`，页面可重新加载或下载该文件。设计与指标口径见 [MAPS 系统演示设计](docs/demo-design/07-MAPS系统演示设计.md)。
+打开 `http://127.0.0.1:8050`。默认 synthetic 场景无需下载数据。Simulation 可调整平台数、各平台分池策略、包裹/车辆规模、物理帧间隔、本地匹配与跨平台机制；Inspection 在完整处理后路网地图上叠加 Station、车辆、包裹和匹配关系，可缩放平移、按阶段回放并点选包裹查看候选、报价和结算；Analysis 展示本次产物的分配、生命周期、平台收益和合作流向。每次运行的回放保存在 `output/maps-demo/latest.json`，页面可重新加载或下载该文件。设计与指标口径见 [MAPS 系统演示设计](docs/demo-design/07-MAPS系统演示设计.md)。
 
 当前 `rl-capa` 选项是 MPCS 的非学习基线，不需要模型文件；Demo 的核心是单次测试场景推演，不执行 PPO 训练。成都与上海预设依赖本地 `dataset/` 数据。
 

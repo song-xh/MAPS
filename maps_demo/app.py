@@ -6,16 +6,36 @@ import json
 from pathlib import Path
 from typing import Any
 
-from dash import ALL, Dash, Input, Output, State, ctx, dcc, html, no_update
+from dash import ALL, Dash, Input, Output, Patch, State, ctx, dcc, html, no_update
 
-from maps_demo.engine import MATCHERS, MECHANISMS, POLICIES, STAGES, run_demo
+from maps_demo.engine import POLICIES, STAGES, run_demo
 from maps_demo.figures import (
-    color_for, flow_figure, map_figure, platform_profit_figure,
-    profit_figure, status_figure,
+    color_for,
+    flow_figure,
+    map_dynamic_traces,
+    map_figure,
+    map_static_trace_count,
+    platform_profit_figure,
+    profit_figure,
+    status_figure,
 )
 
-
 REPLAY_PATH = Path("output/maps-demo/latest.json")
+_ACTIVE_RUN: dict[str, Any] | None = None
+_ACTIVE_RUN_ID = 0
+
+
+def _cache_run(run: dict[str, Any]) -> dict[str, int]:
+    global _ACTIVE_RUN, _ACTIVE_RUN_ID
+    _ACTIVE_RUN_ID += 1
+    _ACTIVE_RUN = run
+    return {"id": _ACTIVE_RUN_ID}
+
+
+def _get_run(reference: dict[str, int] | None) -> dict[str, Any] | None:
+    return _ACTIVE_RUN if reference and reference.get("id") == _ACTIVE_RUN_ID else None
+
+
 STAGE_LABELS = {
     "workload": ("01", "Workload", "任务到达"),
     "parcel": ("02", "Parcel", "平台分池动作"),
@@ -120,9 +140,9 @@ def _simulation_page() -> html.Div:
                 _field("目标平台", _select("focus-platform", [(f"P{i}", f"P{i}") for i in range(1, 5)], "P1"),
                        "仅影响高亮，不改变仿真"),
                 _field("随机种子", _number("seed", 11, minimum=0, maximum=2147483647)),
-                _field("每平台取件", _number("pickups", 3, minimum=1, maximum=30), "仅 Synthetic"),
-                _field("每平台既有送件", _number("dropoffs", 1, minimum=0, maximum=20), "仅 Synthetic"),
-                _field("每平台车辆", _number("vehicles", 2, minimum=1, maximum=16), "仅 Synthetic"),
+                _field("每平台取件", _number("pickups", 3, minimum=1, maximum=30), "测试集抽样规模"),
+                _field("每平台既有送件", _number("dropoffs", 1, minimum=0, maximum=20), "测试集抽样规模"),
+                _field("每平台车辆", _number("vehicles", 2, minimum=1, maximum=16)),
                 _field("物理帧间隔 / 秒", _select("step-size", [(str(x), x) for x in (10, 15, 20, 30, 45, 60)], 30)),
             ]), "A / INPUT"),
             _card("决策与机制", html.Div(children=[
@@ -141,8 +161,8 @@ def _simulation_page() -> html.Div:
                 html.Details(className="advanced", children=[
                     html.Summary("更多仿真参数"),
                     html.Div(className="field-grid", children=[
-                        _field("车辆服务半径 / km", _number("radius", 10.0, minimum=0.1, maximum=100, step=0.1), "仅 Synthetic"),
-                        _field("取件期限 / 秒", _number("deadline", 60, minimum=1, maximum=600), "仅 Synthetic"),
+                        _field("车辆服务半径 / km", _number("radius", 10.0, minimum=0.1, maximum=100, step=0.1)),
+                        _field("取件期限 / 秒", _number("deadline", 60, minimum=1, maximum=1800)),
                         _field("跨平台分享比例", _number("sharing", 0.3, minimum=0.01, maximum=1, step=0.01)),
                     ]),
                 ]),
@@ -172,9 +192,23 @@ def _inspection_page() -> html.Div:
         html.Div(id="current-metrics", className="metric-grid"),
         html.Div(id="stage-strip", className="stage-strip"),
         html.Div(className="inspection-grid", children=[
-            _card("平台与包裹", html.Div(children=[
-                dcc.Graph(id="map", figure=map_figure(None, 0, None, None), config={"displayModeBar": False}),
-                html.Div("地图点位来自场景经纬度；重合点为阅读而轻微错位，连线表示匹配关系。", className="figure-caption"),
+            _card("路网与分配", html.Div(children=[
+                html.Div(className="map-toolbar", children=[
+                    dcc.Checklist(
+                        id="map-layers",
+                        options=[
+                            {"label": "处理后路网", "value": "road"},
+                            {"label": "Station", "value": "station"},
+                        ],
+                        value=["road", "station"], inline=True, className="map-layers",
+                    ),
+                    html.Span("○ 包裹   ■ 车辆   ─ 本地匹配   ··· 跨平台匹配", className="map-legend-hint"),
+                ]),
+                dcc.Graph(id="map", figure=map_figure(None, 0, None, None), config={
+                    "scrollZoom": True, "displayModeBar": True, "displaylogo": False,
+                    "modeBarButtonsToRemove": ["lasso2d", "select2d"],
+                }),
+                html.Div(id="map-caption", className="figure-caption"),
             ]), "SPATIAL VIEW", "map-card"),
             _card("包裹决策档案", html.Div(children=[
                 _field("选择包裹", dcc.Dropdown(id="parcel-picker", options=[], placeholder="先运行场景", className="select")),
@@ -252,12 +286,14 @@ def show_section(section: str):
     Output("platforms", "value"), Output("platforms", "disabled"),
     Output("pickups", "disabled"), Output("dropoffs", "disabled"),
     Output("vehicles", "disabled"), Output("radius", "disabled"),
-    Output("deadline", "disabled"), Input("dataset", "value"), State("platforms", "value"),
+    Output("deadline", "disabled"), Output("vehicles", "value"),
+    Output("deadline", "value"), Input("dataset", "value"), State("platforms", "value"),
 )
 def dataset_controls(dataset: str, count: int):
     fixed = {"chengdu": 4, "shanghai": 4, "shanghai16": 16}
     synthetic = dataset == "synthetic"
-    return (count if synthetic else fixed[dataset],) + (not synthetic,) * 6
+    return (count if synthetic else fixed[dataset], not synthetic, False, False,
+            False, False, False, 2 if synthetic else 4, 60 if synthetic else 720)
 
 
 @app.callback(
@@ -307,14 +343,14 @@ def run_or_load(_run: int, _load: int, dataset: str, platforms: int, seed: int,
         if ctx.triggered_id == "load-button":
             result = json.loads(REPLAY_PATH.read_text(encoding="utf-8"))
             result["meta"]["source"] = "replay"
-            return result, html.Span("已加载上次运行的真实过程回放。", className="status-success")
+            return _cache_run(result), html.Span("已加载上次运行的真实过程回放。", className="status-success")
         settings = _settings(dataset, platforms, seed, pickups, dropoffs, vehicles,
                              step_size, matcher, mechanism, radius, deadline, sharing,
                              policy_ids, policy_values)
         result = run_demo(settings)
         REPLAY_PATH.parent.mkdir(parents=True, exist_ok=True)
         REPLAY_PATH.write_text(json.dumps(result, ensure_ascii=False), encoding="utf-8")
-        return result, html.Span(
+        return _cache_run(result), html.Span(
             f"已完成 {len(result['batches'])} 个物理帧，记录 {len(result['steps'])} 个展示步骤。",
             className="status-success",
         )
@@ -331,10 +367,11 @@ def run_or_load(_run: int, _load: int, dataset: str, platforms: int, seed: int,
     Input("sharing", "value"), Input({"type": "policy", "index": ALL}, "id"),
     Input({"type": "policy", "index": ALL}, "value"),
 )
-def config_notice(run: dict | None, dataset: str, platforms: int, seed: int,
+def config_notice(reference: dict | None, dataset: str, platforms: int, seed: int,
                   pickups: int, dropoffs: int, vehicles: int, step_size: int,
                   matcher: str, mechanism: str, radius: float, deadline: int,
                   sharing: float, policy_ids: list[dict], policy_values: list[str]):
+    run = _get_run(reference)
     if not run:
         return "准备就绪 · 可直接运行默认场景"
     try:
@@ -348,7 +385,8 @@ def config_notice(run: dict | None, dataset: str, platforms: int, seed: int,
 
 
 @app.callback(Output("simulation-result", "children"), Input("run-store", "data"))
-def simulation_result(run: dict | None):
+def simulation_result(reference: dict | None):
+    run = _get_run(reference)
     if not run:
         return html.Div(className="empty-panel", children=[
             html.Span("WORKLOAD → PARCEL → LOCAL → AUCTION → SETTLEMENT", className="eyebrow"),
@@ -368,7 +406,8 @@ def simulation_result(run: dict | None):
     Input("run-store", "data"), Input("map", "clickData"), Input("focus-platform", "value"),
     State("parcel-picker", "value"),
 )
-def choose_parcel(run: dict | None, click: dict | None, focus: str | None, current: str | None):
+def choose_parcel(reference: dict | None, click: dict | None, focus: str | None, current: str | None):
+    run = _get_run(reference)
     if not run:
         return [], None
     catalog = run["catalog"]
@@ -390,7 +429,8 @@ def choose_parcel(run: dict | None, click: dict | None, focus: str | None, curre
 @app.callback(
     Output("timeline", "max"), Input("run-store", "data"),
 )
-def timeline_max(run: dict | None):
+def timeline_max(reference: dict | None):
+    run = _get_run(reference)
     return max(0, len(run["steps"]) - 1) if run else 0
 
 
@@ -422,8 +462,9 @@ def interval_control(active: bool, speed: float, run: dict | None):
     Input("reset-button", "n_clicks"), Input("play-interval", "n_intervals"),
     State("timeline", "value"), State("play-state", "data"),
 )
-def move_timeline(run: dict | None, _next: int, _prev: int, _reset: int,
+def move_timeline(reference: dict | None, _next: int, _prev: int, _reset: int,
                   _tick: int, value: int | None, active: bool):
+    run = _get_run(reference)
     if not run:
         return 0
     maximum = len(run["steps"]) - 1
@@ -548,13 +589,18 @@ def _parcel_detail(run: dict[str, Any], index: int, parcel_id: str | None) -> An
     Output("map", "figure"), Output("current-metrics", "children"),
     Output("stage-strip", "children"), Output("parcel-details", "children"),
     Output("step-label", "children"), Output("inspection-source", "children"),
+    Output("map-caption", "children"),
     Input("run-store", "data"), Input("timeline", "value"),
     Input("focus-platform", "value"), Input("parcel-picker", "value"),
+    Input("map-layers", "value"),
 )
-def render_inspection(run: dict | None, index: int | None, focus: str | None, parcel: str | None):
+def render_inspection(reference: dict | None, index: int | None, focus: str | None,
+                      parcel: str | None, layers: list[str] | None):
+    run = _get_run(reference)
     if not run:
         return (map_figure(None, 0, None, None), [], [],
-                html.P("先在 Simulation 运行一个场景。", className="muted"), "等待运行", "未运行")
+                html.P("先在 Simulation 运行一个场景。", className="muted"), "等待运行", "未运行",
+                "运行后显示完整处理后路网与 Station；滚轮缩放，拖动画布平移。")
     index = max(0, min(int(index or 0), len(run["steps"]) - 1))
     step = run["steps"][index]
     metrics = step["metrics"]
@@ -568,11 +614,29 @@ def render_inspection(run: dict | None, index: int | None, focus: str | None, pa
         _metric("已分配", f"{metrics['assigned']} / {metrics['total']}", "取件包裹"),
         _metric("累计账本", f"{metrics['profit']:.2f}", "全平台"),
     ]
+    geography = run.get("geography")
+    if geography:
+        caption = (
+            f"{run['meta']['dataset']} 处理后路网 · {geography['node_count']:,} 节点 / "
+            f"{geography['arc_count']:,} 有向边 · 完整绘制 {geography['display_segment_count']:,} 条不重复连接线 · "
+            f"{len(geography['stations'])} Station。"
+            "滚轮缩放、拖动平移、双击复位；包裹/车辆重合点轻微错位，匹配线不是行驶轨迹。"
+        )
+    else:
+        caption = "当前回放没有保存路网图层；包裹与车辆点位仍可查看。"
+    if ctx.triggered_id in {"run-store", "map-layers"}:
+        map_view = map_figure(run, index, focus, parcel, layers)
+    else:
+        map_view = Patch()
+        first_dynamic = map_static_trace_count(run, layers)
+        for position, trace in enumerate(map_dynamic_traces(run, index, focus, parcel)):
+            map_view["data"][first_dynamic + position] = trace.to_plotly_json()
     return (
-        map_figure(run, index, focus, parcel), cards, _stage_strip(step["stage"], step["batch"]),
+        map_view, cards, _stage_strip(step["stage"], step["batch"]),
         _parcel_detail(run, index, parcel),
         f"第 {step['batch']} 帧 · {stage[1]} · {index + 1}/{len(run['steps'])}",
         "预计算回放" if run["meta"]["source"] == "replay" else "本次计算 · 阶段回放",
+        caption,
     )
 
 
@@ -580,7 +644,8 @@ def render_inspection(run: dict | None, index: int | None, focus: str | None, pa
     Output("final-metrics", "children"), Output("analysis-content", "children"),
     Input("run-store", "data"), Input("focus-platform", "value"),
 )
-def render_analysis(run: dict | None, focus: str | None):
+def render_analysis(reference: dict | None, focus: str | None):
+    run = _get_run(reference)
     if not run:
         return [], html.Div("先运行场景，结果图表将在这里生成。", className="empty-panel")
     summary = run["summary"]
@@ -612,7 +677,8 @@ def render_analysis(run: dict | None, focus: str | None):
     Output("download-json", "data"), Input("download-button", "n_clicks"),
     State("run-store", "data"), prevent_initial_call=True,
 )
-def download_replay(_clicks: int, run: dict | None):
+def download_replay(_clicks: int, reference: dict | None):
+    run = _get_run(reference)
     if not run:
         return no_update
     return dcc.send_string(json.dumps(run, ensure_ascii=False, indent=2), "maps-replay.json")

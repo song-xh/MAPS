@@ -7,14 +7,14 @@ from math import ceil, fsum
 from pathlib import Path
 from typing import Any
 
+from maps_demo.geography import prepared_geography
 from mpcs.config import DatasetSplit
 from mpcs.core.Domain import ParcelAction, ParcelDecision, PlatformActionBatch
 from mpcs.core.Framework import Environment
 from mpcs.core.LocalMatching import build_local_matchers
 from mpcs.data.Adapters import prepare_environment_split
-from mpcs.experiments.Runner import builtin_algorithms, builtin_cross_mechanisms
 from mpcs.experiments.Presets import dataset_preset
-
+from mpcs.experiments.Runner import builtin_algorithms, builtin_cross_mechanisms
 
 STAGES = ("workload", "parcel", "local", "auction", "settlement")
 POLICIES = ("local-first", "release-first", "wait-first", "localsum", "rl-capa", "mra", "impgta", "fed-ltd")
@@ -32,27 +32,23 @@ def build_config(settings: dict[str, Any]):
         platform_count=platforms if dataset == "synthetic" else None,
     )
     step_size = int(settings["step_size_s"])
-    if dataset == "synthetic":
-        config = replace(
-            config,
-            dataset=replace(
-                config.dataset,
-                pickup_count_per_platform=int(settings["pickups_per_platform"]),
-                dropoff_count_per_platform=int(settings["dropoffs_per_platform"]),
-            ),
-            ev=replace(
-                config.ev,
-                vehicles_per_platform=int(settings["vehicles_per_platform"]),
-                service_radius_km=float(settings.get("service_radius_km", config.ev.service_radius_km)),
-            ),
-            parcel=replace(
-                config.parcel,
-                pickup_deadline_min_s=int(settings.get("deadline_s", config.parcel.pickup_deadline_min_s)),
-                pickup_deadline_max_s=int(settings.get("deadline_s", config.parcel.pickup_deadline_max_s)),
-            ),
-        )
     config = replace(
         config,
+        dataset=replace(
+            config.dataset,
+            pickup_count_per_platform=int(settings["pickups_per_platform"]),
+            dropoff_count_per_platform=int(settings["dropoffs_per_platform"]),
+        ),
+        ev=replace(
+            config.ev,
+            vehicles_per_platform=int(settings["vehicles_per_platform"]),
+            service_radius_km=float(settings.get("service_radius_km", config.ev.service_radius_km)),
+        ),
+        parcel=replace(
+            config.parcel,
+            pickup_deadline_min_s=int(settings.get("deadline_s", config.parcel.pickup_deadline_min_s)),
+            pickup_deadline_max_s=int(settings.get("deadline_s", config.parcel.pickup_deadline_max_s)),
+        ),
         master_seed=int(settings["seed"]),
         auction=replace(
             config.auction,
@@ -267,6 +263,7 @@ def run_demo(settings: dict[str, Any]) -> dict[str, Any]:
     environment = None
     try:
         catalog = _catalog(prepared)
+        geography = prepared_geography(prepared)
         sessions = {}
         registry = builtin_algorithms()
         for policy in set(policies.values()) - {"local-first", "release-first", "wait-first"}:
@@ -372,7 +369,7 @@ def run_demo(settings: dict[str, Any]) -> dict[str, Any]:
                 "matcher": settings["matcher"], "mechanism": settings["mechanism"],
                 "settings": settings, "source": "computed",
             },
-            "catalog": catalog, "steps": steps, "batches": batches,
+            "catalog": catalog, "geography": geography, "steps": steps, "batches": batches,
             "summary": {
                 **final,
                 "assignment_rate": final["assigned"] / final["total"] if final["total"] else 0.0,
