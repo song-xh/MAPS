@@ -1,0 +1,80 @@
+{
+  "review_date": "2026-09-20",
+  "scope": "Selected evidence files, not a complete repository snapshot",
+  "algorithm_head": "02bc3963bfda388bd1682d07680b860b42c74a93",
+  "working_tree_was_dirty": true,
+  "source_files": [
+    {
+      "path": "D:\\Code\\AMSAS\\app.py",
+      "sha256": "8d4f083985f4ed5a8bbda7a9e3fa73a752e8c91e97b33bf58dd0d9152e097551"
+    },
+    {
+      "path": "D:\\Code\\AMSAS\\server.py",
+      "sha256": "1449a886366dbc4b2694b3625959d051b7f9d5524b3df857152281982114796f"
+    },
+    {
+      "path": "D:\\Code\\AMSAS\\callbacks\\simulator.py",
+      "sha256": "07748aa1388be66dbe900cb6743929669e31a132f5f9b3c1d3bc4f22fa76d932"
+    },
+    {
+      "path": "D:\\Code\\AMSAS\\callbacks\\DRL.py",
+      "sha256": "a0dcd9ca99b38146b5f4db88580e1e8010e50c605deefc95b125390a36767be3"
+    },
+    {
+      "path": "D:\\Code\\auction_aware_task_assignment\\AGENTS.md",
+      "sha256": "b1056776a75613064b4146d3f80c17b7166804dad364287f58c33b193bbb60d4"
+    },
+    {
+      "path": "D:\\Code\\auction_aware_task_assignment\\docs\\agent.md",
+      "sha256": "3b0ecd5d195186a3d0c007c1a266f437e729b53ae6b687d515fb154ba950119f"
+    },
+    {
+      "path": "D:\\Code\\auction_aware_task_assignment\\docs\\Auction-Aware Crowdsourced Parcel Assignment for Cooperative Urban Logistics.md",
+      "sha256": "e889e2705fa7ceef9db75e047e54825e4a95e09a4431f29cebbb32876848c673"
+    },
+    {
+      "path": "D:\\Code\\auction_aware_task_assignment\\docs\\review.md",
+      "sha256": "75c191fa6671bb9e74cdddce4ebb48eefb2d1b643223a243f774b6c9c945af51"
+    },
+    {
+      "path": "D:\\Code\\auction_aware_task_assignment\\capa\\cama.py",
+      "sha256": "3827b0fa9ee0b4cbdbb84af6eb114dd89596acad77eb1bbd907d824b1865222c"
+    },
+    {
+      "path": "D:\\Code\\auction_aware_task_assignment\\capa\\dapa.py",
+      "sha256": "22f3d181b46319243cbbbb8e568e0b0271e18a6945cf60d81bfd5a13656698de"
+    },
+    {
+      "path": "D:\\Code\\auction_aware_task_assignment\\capa\\metrics.py",
+      "sha256": "14f35afdafa06e665a583473a71b742b69db51e21a2a102c4259c47696ad4e5c"
+    },
+    {
+      "path": "D:\\Code\\auction_aware_task_assignment\\capa\\models.py",
+      "sha256": "d522bf4f9b71b977e933c9ee25649849d1fd1c05eb0c809511a0ed3e3373d2de"
+    },
+    {
+      "path": "D:\\Code\\auction_aware_task_assignment\\env\\chengdu.py",
+      "sha256": "7900218d7c3274446a173c804256b66b2e29d27024f453bfdb5949a83d3e7a0d"
+    },
+    {
+      "path": "D:\\Code\\auction_aware_task_assignment\\rl_capa\\env.py",
+      "sha256": "03b4010479be47e16a45d399dd4ea9c57ca75f83b25fb27b9da5d4cea3233d70"
+    },
+    {
+      "path": "D:\\Code\\auction_aware_task_assignment\\rl_capa\\trainer.py",
+      "sha256": "ddac91671e07dfc4d2f0f9f491f368750f75dd4840fc1bd0dc9b08e4047d730e"
+    },
+    {
+      "path": "D:\\Code\\auction_aware_task_assignment\\rl_capa\\evaluate.py",
+      "sha256": "fbc45dc8da498ecaa9bcf1fc7e9ef3a2cfdc7effaaa1a44cb8edbd7a2bbf560f"
+    },
+    {
+      "path": "D:\\Code\\auction_aware_task_assignment\\result\\exp1_formal_CD\\paper_manifest.json",
+      "sha256": "790d1c1409eec322454cd601383d09701edc64c0759ac23daf1e233781e880ae"
+    },
+    {
+      "path": "D:\\Code\\auction_aware_task_assignment\\result\\exp1_formal_CD\\summary_table.csv",
+      "sha256": "06fd29300bbfb18b923972282744d0622f25bfa1f4de4d197d2720f8769af43b"
+    }
+  ]
+}
