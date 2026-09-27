@@ -142,6 +142,7 @@ class RLCAPARule:
         vehicles_by_id = {vehicle.vehicle_id: vehicle for vehicle in state.vehicles}
         distance_cache: dict[tuple[str, str], float] = {}
         all_scores: list[float] = []
+        pair_records: list[dict[str, float | str]] = []
         best_by_request: dict[
             str,
             tuple[PickupPlanningRequest, RouteInsertionOption, float],
@@ -159,7 +160,13 @@ class RLCAPARule:
                     vehicle,
                     distance_cache,
                 )
-                all_scores.append(score)
+                all_scores.append((1.0 - self.config.local_payment_ratio) * self._fare(request))
+                pair_records.append({
+                    "parcel_id": request.parcel_id, "vehicle_id": option.vehicle_id,
+                    "utility": score, "revenue_score": all_scores[-1],
+                    "extra_km": option.extra_distance_km,
+                    "eta_s": option.projected_pickup_time_s,
+                })
                 current = best_by_request.get(request.parcel_id)
                 if (
                     current is None
@@ -181,6 +188,8 @@ class RLCAPARule:
             if self._threshold_count == 0
             else self.config.omega * self._threshold_sum / self._threshold_count
         )
+        self.last_threshold = threshold
+        self.last_candidate_pairs = tuple(pair_records)
         shadow = state
         shadow_vehicles_by_id = vehicles_by_id
         proposals: list[LocalAssignmentProposal] = []
@@ -189,7 +198,7 @@ class RLCAPARule:
             if fixed is None:
                 continue
             _, fixed_option, fixed_score = fixed
-            if fixed_score < threshold:
+            if (1.0 - self.config.local_payment_ratio) * self._fare(request) < threshold:
                 continue
             vehicle = shadow_vehicles_by_id.get(fixed_option.vehicle_id)
             if vehicle is None:

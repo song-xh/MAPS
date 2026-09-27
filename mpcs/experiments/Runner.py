@@ -18,7 +18,7 @@ from mpcs.algorithms.baseline import (
     build_baseline_components,
     build_baseline_pool_policies,
 )
-from mpcs.algorithms.baseline.Framework import BaselineBatchPolicy
+from mpcs.algorithms.baseline.Framework import BaselineBatchPolicy, BaselineLocalMatcher
 from mpcs.algorithms.baseline.Greedy import build_neutral_greedy_context
 from mpcs.config import DatasetSplit, ExperimentConfig
 from mpcs.core.AuctionUtils import PaperAuctioneer
@@ -218,6 +218,13 @@ def _baseline_decide(
 @dataclass(slots=True)
 class _BaselinePoolSession:
     policies: Mapping[str, BaselineBatchPolicy]
+
+    @property
+    def local_matchers(self) -> Mapping[str, BaselineLocalMatcher]:
+        return {
+            platform_id: BaselineLocalMatcher(policy._algorithm)
+            for platform_id, policy in self.policies.items()
+        }
 
     def decide(
         self,

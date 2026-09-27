@@ -69,8 +69,8 @@ def map_dynamic_traces(run: dict[str, Any], index: int, focus: str | None,
     state = step["state"]
     visible = {
         parcel_id: item for parcel_id, item in catalog.items()
-        if item["arrival_s"] <= step["decision_time_s"] or
-        state["parcels"].get(parcel_id, {}).get("status") != "future"
+        if state["parcels"].get(parcel_id, {}).get("status")
+        in {"waiting", "public_this_step", "cross_pool"}
     }
     point_items = [(f"parcel:{pid}", item["point"]) for pid, item in visible.items()]
     point_items += [(f"vehicle:{vid}", item["point"]) for vid, item in state["vehicles"].items()]
@@ -102,9 +102,23 @@ def map_dynamic_traces(run: dict[str, Any], index: int, focus: str | None,
                 x=xs, y=ys, mode="lines", showlegend=False,
                 line=dict(color="#f97316" if cross else "#10b981",
                           width=3 if highlighted else 1.8,
-                          dash="dot" if cross else "solid"),
+                          dash="dot" if cross else "dash"),
                 hoverinfo="skip",
             ))
+    for platform in platforms:
+        route_x, route_y = [], []
+        for vehicle in state["vehicles"].values():
+            if vehicle["platform"] != platform:
+                continue
+            navigation = vehicle.get("navigation", [])
+            if len(navigation) > 1:
+                route_x.extend([point[0] for point in navigation] + [None])
+                route_y.extend([point[1] for point in navigation] + [None])
+        traces.append(go.Scatter(
+            x=route_x, y=route_y, mode="lines", showlegend=False,
+            line=dict(color=color_for(platform, platforms), width=2.5 if platform == focus else 1.4),
+            opacity=0.72 if platform == focus else 0.36, hoverinfo="skip",
+        ))
     for platform in platforms:
         parcel_ids = [pid for pid, item in visible.items() if item["origin"] == platform]
         traces.append(go.Scatter(
@@ -117,7 +131,6 @@ def map_dynamic_traces(run: dict[str, Any], index: int, focus: str | None,
             marker=dict(
                 symbol="circle", size=[19 if pid == selected else 13 for pid in parcel_ids],
                 color=color_for(platform, platforms),
-                opacity=[1 if state["parcels"].get(pid, {}).get("status") != "expired" else 0.35 for pid in parcel_ids],
                 line=dict(color="#0f172a" if platform == focus else "white", width=2.3 if platform == focus else 1),
             ),
             customdata=[["parcel", pid, visible[pid]["label"]] for pid in parcel_ids],

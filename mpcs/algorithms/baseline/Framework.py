@@ -72,6 +72,8 @@ class _LocalAlgorithm(LocalSumRule, RLCAPARule, MRARule, IMPGTARule, FedLTDRule)
         "future_parcels",
         "_threshold_sum",
         "_threshold_count",
+        "last_threshold",
+        "last_candidate_pairs",
         "_fare_by_parcel",
         "last_decision_time_s",
         "last_match_time_s",
@@ -96,6 +98,8 @@ class _LocalAlgorithm(LocalSumRule, RLCAPARule, MRARule, IMPGTARule, FedLTDRule)
         self.future_parcels = tuple(future_parcels)
         self._threshold_sum = 0.0
         self._threshold_count = 0
+        self.last_threshold = float("inf")
+        self.last_candidate_pairs = ()
         self._fare_by_parcel: dict[str, float] = {}
         self.last_decision_time_s = 0.0
         self.last_match_time_s = 0.0

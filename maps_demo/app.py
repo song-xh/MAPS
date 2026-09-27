@@ -69,7 +69,7 @@ STATUS_LABELS = {
 def _field(label: str, control: Any, hint: str | None = None) -> html.Div:
     return html.Div(className="field", children=[
         html.Label(label), control,
-        html.Small(hint, className="field-hint") if hint else None,
+        html.Small(hint, className="field-hint") if hint is not None else None,
     ])
 
 
@@ -116,9 +116,11 @@ def _settings(dataset: str, platforms: int, seed: int, pickup_mode: str, pickups
               source_ids: list[dict], source_values: list[str],
               vehicles: int, step_size: int, matcher: str, mechanism: str,
               radius: float, deadline: int, sharing: float,
-              policy_ids: list[dict], policy_values: list[str]) -> dict[str, Any]:
+              policy_ids: list[dict], policy_values: list[str],
+              primary_platform: str = "P1") -> dict[str, Any]:
     return {
         "dataset": dataset, "platforms": int(platforms), "seed": int(seed),
+        "primary_platform": primary_platform,
         "pickups_per_platform": "all" if pickup_mode == "all" else int(pickups),
         "dropoffs_per_platform": "all" if dropoff_mode == "all" else int(dropoffs),
         "split": split, "window_start": window_start, "window_end": window_end,
@@ -151,7 +153,7 @@ def _simulation_page() -> html.Div:
                 _field("Platforms", _select("platforms", [(str(n), n) for n in range(2, 17)], 4),
                        "Synthetic is adjustable; real datasets use a fixed platform count."),
                 _field("Focus platform", _select("focus-platform", [(f"P{i}", f"P{i}") for i in range(1, 5)], "P1"),
-                       "Changes highlighting only."),
+                       "RL-CAPA uses this platform as the auction origin for the next run."),
                 _field("Random seed", _number("seed", 11, minimum=0, maximum=2147483647)),
                 _field("Arrival window start", dcc.Input(id="window-start", type="time", value="00:00", className="input")),
                 _field("Arrival window end", dcc.Input(id="window-end", type="time", value="00:01", className="input")),
@@ -175,7 +177,7 @@ def _simulation_page() -> html.Div:
                         ("Paper · reverse Vickrey", "paper"),
                         ("Regional fixed payment", "regional-fixed"),
                         ("Pool random candidate", "pool-random"),
-                    ], "paper")),
+                    ], "paper"), html.Span(id="mechanism-note")),
                 ]),
                 html.Div(className="section-divider"),
                 html.Div(className="inline-heading", children=[html.H4("Platform pool policies"),
@@ -212,8 +214,8 @@ def _inspection_page() -> html.Div:
     return html.Div(id="inspection-page", className="page", style={"display": "none"}, children=[
         html.Div(className="page-intro", children=[
             html.Div([html.Span("02 / INSPECTION", className="eyebrow"),
-                      html.H2("Inspect every decision"),
-                      html.P("Select a parcel or platform, then step through workload, pooling, local matching, auction and settlement.")]),
+                      html.H2("Inspect each decision batch"),
+                      html.P("Step through all pending parcels, local matching, partner bids and settlement in each frame.")]),
             html.Div(id="inspection-source", className="source-pill"),
         ]),
         html.Div(id="current-metrics", className="metric-grid"),
@@ -229,7 +231,7 @@ def _inspection_page() -> html.Div:
                         ],
                         value=["road", "station"], inline=True, className="map-layers",
                     ),
-                    html.Span("○ Parcel   ■ EV   ─ Local match   ··· Cross-platform match", className="map-legend-hint"),
+                    html.Span("○ Unmatched parcel   ■ EV   ─ Road route   - - Local match   ··· Cross match", className="map-legend-hint"),
                 ]),
                 dcc.Graph(id="map", figure=map_figure(None, 0, None, None), config={
                     "scrollZoom": True, "displayModeBar": True, "displaylogo": False,
@@ -237,10 +239,8 @@ def _inspection_page() -> html.Div:
                 }),
                 html.Div(id="map-caption", className="figure-caption"),
             ]), "SPATIAL VIEW", "map-card"),
-            _card("Parcel decision archive", html.Div(children=[
-                _field("Select parcel", dcc.Dropdown(id="parcel-picker", options=[], placeholder="Run a scenario first", className="select")),
-                html.Div(id="parcel-details", className="parcel-details"),
-            ]), "DECISION TRACE", "details-card"),
+            _card("Batch decision trace", html.Div(id="parcel-details", className="parcel-details"),
+                  "BATCH TRACE", "details-card"),
         ]),
         _card("Platform decision archive", html.Div(id="platform-details", className="platform-details"),
               "PLATFORM TRACE", "platform-card"),
@@ -416,6 +416,19 @@ def platform_controls(count: int, focus: str | None):
             focus if focus in platforms else "P1", controls)
 
 
+@app.callback(
+    Output("mechanism", "disabled"), Output("mechanism-note", "children"),
+    Input("focus-platform", "value"),
+    Input({"type": "policy", "index": ALL}, "id"),
+    Input({"type": "policy", "index": ALL}, "value"),
+)
+def capa_mechanism(focus: str, policy_ids: list[dict], policy_values: list[str]):
+    selected = dict(zip((item["index"] for item in policy_ids), policy_values))
+    if selected.get(focus) == "rl-capa":
+        return True, "RL-CAPA uses its own local matcher and DAPA for this primary platform."
+    return False, ""
+
+
 def _run_worker(job: dict[str, Any], settings: dict[str, Any]) -> None:
     def progress(value: float, label: str) -> None:
         job["percent"] = int(value)
@@ -450,12 +463,13 @@ def _run_worker(job: dict[str, Any], settings: dict[str, Any]) -> None:
     State("radius", "value"), State("deadline", "value"), State("sharing", "value"),
     State({"type": "policy", "index": ALL}, "id"),
     State({"type": "policy", "index": ALL}, "value"),
+    State("focus-platform", "value"),
     prevent_initial_call=True,
 )
 def run_or_load(_run, _load, _poll, dataset, platforms, seed, pickup_mode, pickups,
                 dropoff_mode, dropoffs, split, window_start, window_end, source_ids,
                 source_values, vehicles, step_size, matcher, mechanism, radius,
-                deadline, sharing, policy_ids, policy_values):
+                deadline, sharing, policy_ids, policy_values, primary_platform):
     global _RUN_JOB
     trigger = ctx.triggered_id
     if trigger == "run-poll":
@@ -474,8 +488,8 @@ def run_or_load(_run, _load, _poll, dataset, platforms, seed, pickup_mode, picku
     if trigger == "load-button":
         try:
             result = json.loads(REPLAY_PATH.read_text(encoding="utf-8"))
-            if "analysis_end_s" not in result["meta"]:
-                raise ValueError("This replay predates window analysis; run a new scenario.")
+            if "analysis_end_s" not in result["meta"] or "batch_parcels" not in result["steps"][0]:
+                raise ValueError("This replay predates batch inspection; run a new scenario.")
             result["meta"]["source"] = "replay"
             return (_cache_run(result), html.Span("Loaded the previous replay.", className="status-success"),
                     100, True, False, False)
@@ -485,7 +499,8 @@ def run_or_load(_run, _load, _poll, dataset, platforms, seed, pickup_mode, picku
         settings = _settings(dataset, platforms, seed, pickup_mode, pickups,
                              dropoff_mode, dropoffs, split, window_start, window_end,
                              source_ids, source_values, vehicles, step_size, matcher,
-                             mechanism, radius, deadline, sharing, policy_ids, policy_values)
+                             mechanism, radius, deadline, sharing, policy_ids, policy_values,
+                             primary_platform)
         if parse_clock(window_start) >= parse_clock(window_end):
             raise ValueError("Arrival window end must follow its start")
         job = {"percent": 0, "label": "Preparing scenario", "done": False}
@@ -507,7 +522,7 @@ def run_or_load(_run, _load, _poll, dataset, platforms, seed, pickup_mode, picku
     Input("vehicles", "value"), Input("step-size", "value"), Input("matcher", "value"),
     Input("mechanism", "value"), Input("radius", "value"), Input("deadline", "value"),
     Input("sharing", "value"), Input({"type": "policy", "index": ALL}, "id"),
-    Input({"type": "policy", "index": ALL}, "value"),
+    Input({"type": "policy", "index": ALL}, "value"), Input("focus-platform", "value"),
 )
 def config_notice(reference: dict | None, dataset: str, platforms: int, seed: int,
                   pickup_mode: str, pickups: int, dropoff_mode: str, dropoffs: int,
@@ -515,7 +530,8 @@ def config_notice(reference: dict | None, dataset: str, platforms: int, seed: in
                   source_ids: list[dict], source_values: list[str],
                   vehicles: int, step_size: int,
                   matcher: str, mechanism: str, radius: float, deadline: int,
-                  sharing: float, policy_ids: list[dict], policy_values: list[str]):
+                  sharing: float, policy_ids: list[dict], policy_values: list[str],
+                  primary_platform: str):
     run = _get_run(reference)
     if not run:
         return "Ready to run"
@@ -523,7 +539,8 @@ def config_notice(reference: dict | None, dataset: str, platforms: int, seed: in
         current = _settings(dataset, platforms, seed, pickup_mode, pickups,
                             dropoff_mode, dropoffs, split, window_start, window_end,
                             source_ids, source_values, vehicles, step_size, matcher,
-                            mechanism, radius, deadline, sharing, policy_ids, policy_values)
+                            mechanism, radius, deadline, sharing, policy_ids, policy_values,
+                            primary_platform)
     except (ValueError, TypeError):
         return "Complete the configuration before running"
     return ("Settings changed · run again to apply" if current != run["meta"]["settings"]
@@ -545,31 +562,6 @@ def simulation_result(reference: dict | None):
         _metric("Cross-platform", str(summary["cross_count"]), "Origin differs from serving platform"),
         _metric("Window ledger total", f"{summary['profit']:.2f}", f"Through {clock_time(run['meta']['analysis_end_s'])}"),
     ])
-
-
-@app.callback(
-    Output("parcel-picker", "options"), Output("parcel-picker", "value"),
-    Input("run-store", "data"), Input("map", "clickData"), Input("focus-platform", "value"),
-    State("parcel-picker", "value"),
-)
-def choose_parcel(reference: dict | None, click: dict | None, focus: str | None, current: str | None):
-    run = _get_run(reference)
-    if not run:
-        return [], None
-    catalog = run["catalog"]
-    options = [{"label": f"{item['label']} · {clock_time(item['arrival_s'])}", "value": parcel_id}
-               for parcel_id, item in catalog.items()]
-    if ctx.triggered_id == "map" and click:
-        custom = click["points"][0].get("customdata")
-        if custom and custom[0] == "parcel" and custom[1] in catalog:
-            return options, custom[1]
-    if current in catalog and ctx.triggered_id != "run-store":
-        return options, current
-    cross = [parcel_id for parcel_id, state in run["steps"][-1]["state"]["parcels"].items()
-             if parcel_id in catalog and catalog[parcel_id]["origin"] == focus and
-             state["serving_platform"] not in (None, focus)]
-    preferred = cross or [pid for pid, item in catalog.items() if item["origin"] == focus]
-    return options, (preferred or list(catalog))[0] if catalog else None
 
 
 @app.callback(
@@ -635,99 +627,151 @@ def _stage_strip(stage: str, batch: int) -> list[html.Div]:
             for index, (number, english, description) in enumerate(STAGE_LABELS.values())]
 
 
-def _parcel_detail(run: dict[str, Any], index: int, parcel_id: str | None) -> Any:
-    if not parcel_id or parcel_id not in run["catalog"]:
-        return html.P("Select a parcel to inspect its decisions.", className="muted")
+def _batch_detail(run: dict[str, Any], index: int) -> Any:
     step = run["steps"][index]
-    item = run["catalog"][parcel_id]
-    state = step["state"]["parcels"].get(parcel_id, {})
-    current = step["details"].get(parcel_id, {})
-    history = next((prior["details"][parcel_id] for prior in reversed(run["steps"][:index + 1])
-                    if prior["stage"] == "settlement" and parcel_id in prior["details"]), {})
-    detail = current or history
     stage_index = STAGES.index(step["stage"])
-    action = step["decisions"].get(parcel_id)
+    catalog = run["catalog"]
+    batch_ids = step.get("batch_parcels", [])
+    if run["meta"]["mechanism"] == "dapa":
+        primary = run["meta"]["primary_platform"]
+        batch_ids = [parcel_id for parcel_id in batch_ids
+                     if catalog[parcel_id]["origin"] == primary]
+    if not batch_ids:
+        return html.P("No pickup parcels await a decision in this batch.", className="muted")
+    rows = []
+    local_count = cross_count = released_count = 0
+    for parcel_id in batch_ids:
+        parcel = catalog[parcel_id]
+        state = step["state"]["parcels"][parcel_id]
+        detail = step["details"].get(parcel_id, {})
+        action = step["decisions"].get(parcel_id)
+        local = (detail.get("local_matches") or [None])[0] if stage_index >= 2 else None
+        award = (detail.get("awards") or [None])[0] if stage_index >= 3 else None
+        serving = detail.get("serving_receipt") if stage_index >= 4 else None
+        if local:
+            local_count += 1
+        if award:
+            cross_count += 1
+        if action == "RELEASE":
+            released_count += 1
+        local_text = (f"{local['vehicle_id']} · {local['extra_km']:.2f} km" if local
+                      else "Released" if action == "RELEASE" and stage_index >= 2
+                      else "No feasible match" if stage_index >= 2 else "—")
+        cross_text = (f"{award['winner']} / {serving['vehicle_id'] if serving else 'EV pending'}"
+                      if award else "No valid bid" if action == "RELEASE" and stage_index >= 3
+                      else "—")
+        rows.append([
+            html.Div([html.Strong(parcel["label"]), html.Code(parcel_id, title=parcel_id)]),
+            parcel["origin"],
+            STATUS_LABELS.get(state["status"], state["status"]),
+            action if stage_index >= 1 and action else "—",
+            local_text, cross_text,
+        ])
     sections = [
         html.Div(className="parcel-title", children=[
-            html.Div([html.Span("PICKUP PARCEL", className="eyebrow"), html.H3(item["label"])]),
-            html.Span(STATUS_LABELS.get(state.get("status"), state.get("status", "—")), className="status-badge"),
+            html.Div([html.Span("CURRENT FRAME", className="eyebrow"),
+                      html.H3(f"Batch {step['batch']} · {clock_time(step['decision_time_s'])}")]),
+            html.Span(f"{len(batch_ids)} parcels", className="status-badge"),
         ]),
-        html.Div(className="fact-grid", children=[
-            html.Div([html.Small("Origin platform"), html.Strong(item["origin"])]),
-            html.Div([html.Small("Serving platform"), html.Strong(state.get("serving_platform") or "—")]),
-            html.Div([html.Small("Arrival / deadline"), html.Strong(f"{clock_time(item['arrival_s'])} / {clock_time(item['deadline_s'])}")]),
-            html.Div([html.Small("Fare"), html.Strong(f"{item['fare']:.2f}")]),
+        html.Div(className="workload-chips", children=[
+            html.Span(f"{len(batch_ids)} pending in batch"),
+            html.Span(f"{local_count} local matches"),
+            html.Span(f"{released_count} released"),
+            html.Span(f"{cross_count} cross awards"),
         ]),
+        html.Div(className="batch-table-wrap", children=_table(
+            ["Parcel", "Origin", "Status", "Pool action", "Local match", "Cross match"], rows
+        )),
     ]
-    if stage_index == 0:
-        waiting = {
-            platform: sum(1 for pid, parcel_state in step["state"]["parcels"].items()
-                          if run["catalog"][pid]["origin"] == platform and
-                          parcel_state["status"] == "waiting")
-            for platform in run["meta"]["platforms"]
-        }
-        sections.append(html.Div(className="trace-section", children=[
-            html.H4("Workload at this frame"),
-            html.Div(className="workload-chips", children=[
-                html.Span(f"{platform} · {count} pending")
-                for platform, count in waiting.items()
-            ]),
-        ]))
-    if stage_index >= 1:
-        sections.append(html.Div(className="trace-section", children=[
-            html.H4("Platform pool action"),
-            html.P(action or "No new action this frame", className="action-value"),
-        ]))
     if stage_index >= 2:
-        options = detail.get("local_options", [])
-        matches = detail.get("local_matches", [])
-        selected_vehicles = {match["vehicle_id"] for match in matches}
+        candidate_rows = []
+        for parcel_id in batch_ids:
+            detail = step["details"].get(parcel_id, {})
+            selected = {match["vehicle_id"] for match in detail.get("local_matches", [])}
+            for option in detail.get("local_options", []):
+                threshold = step.get("thresholds", {}).get(catalog[parcel_id]["origin"])
+                revenue = option.get("revenue_score")
+                decision = ("Matched" if option["vehicle_id"] in selected else
+                            "Below threshold" if revenue is not None and threshold is not None
+                            and revenue < threshold else
+                            "Released after batch planning" if step["decisions"].get(parcel_id) == "RELEASE"
+                            and revenue is not None else "Candidate")
+                candidate_rows.append([
+                    catalog[parcel_id]["label"], option["vehicle_id"],
+                    f"{option['extra_km']:.3f} km", clock_time(option["eta_s"]),
+                    f"{revenue:.3f} / {threshold:.3f}" if revenue is not None and threshold is not None else "—",
+                    decision,
+                ])
         sections.append(html.Div(className="trace-section", children=[
-            html.H4("Feasible local matches"),
-            _table(["Candidate EV", "Extra distance", "ETA", "Result"], [
-                [option["vehicle_id"], f"{option['extra_km']:.3f} km",
-                 clock_time(option['eta_s']), "✓ Committed" if option["vehicle_id"] in selected_vehicles else "Candidate"]
-                for option in options
-            ]) if options else html.P("No feasible local candidate in this frame.", className="muted"),
+            html.H4("Local candidate evaluation"),
+            html.P("Revenue score / dynamic threshold is shown for RL-CAPA pairs.",
+                   className="hint-line") if step.get("thresholds") else None,
+            html.Div(className="batch-table-wrap", children=_table(
+                ["Parcel", "Candidate EV", "Extra distance", "ETA", "Revenue / threshold", "Result"],
+                candidate_rows,
+            )) if candidate_rows else html.P("No feasible local candidates in this batch.", className="muted"),
         ]))
     if stage_index >= 3:
-        bids = sorted(detail.get("valid_bids", []), key=lambda row: row["amount"])
-        candidate_groups = detail.get("intent_candidates", [])
-        award = (detail.get("awards") or [None])[0]
-        mechanism = run["meta"]["mechanism"]
-        rule = ("Lowest valid bid wins; payment is the second-lowest bid, or its own bid if unopposed."
-                if mechanism == "paper" else "The selected bid and payment can differ under this mechanism.")
-        sections.append(html.Div(className="trace-section", children=[
-            html.H4("Cross-platform auction"),
-            html.P(rule, className="hint-line"),
-            html.Div(className="candidate-line", children=[
-                html.Strong("Candidate intents: "),
-                "; ".join(f"{candidate['platform']} → {', '.join(candidate['vehicle_ids'])}"
-                          for candidate in candidate_groups) if candidate_groups else "No candidate intent",
-            ]),
-            _table(["Platform", "Valid bid", "Result"], [
-                [bid["platform"], f"{bid['amount']:.3f}",
-                 "✓ Winner" if award and award["winner"] == bid["platform"] else "Not selected"]
-                for bid in bids
-            ]) if bids else html.P("No valid bid for this parcel in this frame.", className="muted"),
-            html.Div(f"Winner {award['winner']} · Payment {award['payment']:.3f} · {award['valid_bidder_count']} valid bidders",
-                     className="award-line") if award else None,
-        ]))
+        auctions = []
+        for parcel_id in batch_ids:
+            detail = step["details"].get(parcel_id, {})
+            if step["decisions"].get(parcel_id) != "RELEASE" and not detail.get("valid_bids"):
+                continue
+            bids = sorted(detail.get("platform_bids") or detail.get("valid_bids", []),
+                          key=lambda item: item["amount"])
+            award = (detail.get("awards") or [None])[0]
+            candidates = detail.get("intent_candidates", [])
+            auctions.append(html.Div(className="trace-section", children=[
+                html.Div(className="parcel-title", children=[
+                    html.H4(catalog[parcel_id]["label"]),
+                    html.Span("Awarded" if award else "Unmatched", className="status-badge"),
+                ]),
+                html.P("Eligible partner intents: " + (
+                    "; ".join(f"{item['platform']} → {', '.join(item['vehicle_ids'])}"
+                              for item in candidates) if candidates else "none"
+                ), className="hint-line"),
+                _table(
+                    ["Partner", "Courier bid", "Platform bid", "Auction result"]
+                    if run["meta"]["mechanism"] == "dapa"
+                    else ["Partner", "Valid bid", "Auction result"],
+                    [([bid["platform"], f"{bid['courier_bid']:.3f}",
+                       f"{bid['amount']:.3f}"] if run["meta"]["mechanism"] == "dapa"
+                      else [bid["platform"], f"{bid['amount']:.3f}"])
+                     + ["Above limit" if not bid.get("valid", True) else
+                        "Winner" if award and award["winner"] == bid["platform"] else "Valid bid"]
+                     for bid in bids],
+                ) if bids else html.P("No eligible partner submitted a bid.", className="muted"),
+                html.Div(
+                    f"Selected {award['winner']} · payment {award['payment']:.3f} "
+                    f"· {award['valid_bidder_count']} valid bids",
+                    className="award-line"
+                ) if award else None,
+            ]))
+        sections.append(html.Div(className="auction-list", children=[
+            html.H4("Cross-platform auction by parcel"),
+            html.P("All eligible partners quote; the lowest valid platform bid wins. "
+                   "With two or more valid bids, payment is the second-lowest bid.",
+                   className="hint-line") if run["meta"]["mechanism"] in {"paper", "dapa"} else None,
+            *auctions,
+        ]) if auctions else html.P("No released parcels entered the auction in this batch.",
+                                   className="muted"))
     if stage_index >= 4:
-        receipt = detail.get("origin_receipt")
-        serving = detail.get("serving_receipt")
-        sections.append(html.Div(className="trace-section", children=[
-            html.H4("Execution & settlement"),
-            html.P(f"Outcome: {detail.get('outcome', 'No new result in this frame')}", className="hint-line"),
-            html.Div(className="receipt-grid", children=[
-                html.Div([html.Small("Origin platform utility"),
-                          html.Strong(f"{receipt['utility']:.3f}" if receipt else
-                                      f"{detail['item_utility']:.3f}" if "item_utility" in detail else "—")]),
-                html.Div([html.Small("Serving EV"), html.Strong(serving["vehicle_id"] if serving else state.get("vehicle_id") or "—")]),
-                html.Div([html.Small("Serving platform utility"), html.Strong(f"{serving['utility']:.3f}" if serving else "—")]),
-                html.Div([html.Small("Cross-platform payment"), html.Strong(f"{receipt['payment']:.3f}" if receipt and receipt["payment"] is not None else "—")]),
-            ]),
-        ]))
+        settlements = []
+        for parcel_id in batch_ids:
+            detail = step["details"].get(parcel_id, {})
+            receipt = detail.get("origin_receipt")
+            if receipt:
+                settlements.append([
+                    catalog[parcel_id]["label"],
+                    detail.get("outcome", "Assigned"),
+                    f"{receipt['utility']:.3f}",
+                    f"{receipt['payment']:.3f}" if receipt["payment"] is not None else "—",
+                ])
+        if settlements:
+            sections.append(html.Div(className="trace-section", children=[
+                html.H4("Batch settlement"),
+                _table(["Parcel", "Outcome", "Origin utility", "Cross payment"], settlements),
+            ]))
     return sections
 
 
@@ -738,11 +782,11 @@ def _parcel_detail(run: dict[str, Any], index: int, parcel_id: str | None) -> An
     Output("step-label", "children"), Output("inspection-source", "children"),
     Output("map-caption", "children"),
     Input("run-store", "data"), Input("timeline", "value"),
-    Input("focus-platform", "value"), Input("parcel-picker", "value"),
+    Input("focus-platform", "value"),
     Input("map-layers", "value"),
 )
 def render_inspection(reference: dict | None, index: int | None, focus: str | None,
-                      parcel: str | None, layers: list[str] | None):
+                      layers: list[str] | None):
     run = _get_run(reference)
     if not run:
         return (map_figure(None, 0, None, None), [], [],
@@ -794,20 +838,20 @@ def render_inspection(reference: dict | None, index: int | None, focus: str | No
             f"{run['meta']['dataset']} processed network · {geography['node_count']:,} nodes / "
             f"{geography['arc_count']:,} directed arcs · all {geography['display_segment_count']:,} distinct "
             f"road connections drawn · {len(geography['stations'])} stations. "
-            "Scroll to zoom, drag to pan, double-click to reset. Overlapping parcel/EV markers are slightly offset; match lines are not routes."
+            "Scroll to zoom, drag to pan, double-click to reset. Only unmatched parcels are mapped. Solid routes follow roads; dashed connectors show matches."
         )
     else:
         caption = "This replay has no saved road layer; parcel and EV markers remain available."
     if ctx.triggered_id in {"run-store", "map-layers"}:
-        map_view = map_figure(run, index, focus, parcel, layers)
+        map_view = map_figure(run, index, focus, None, layers)
     else:
         map_view = Patch()
         first_dynamic = map_static_trace_count(run, layers)
-        for position, trace in enumerate(map_dynamic_traces(run, index, focus, parcel)):
+        for position, trace in enumerate(map_dynamic_traces(run, index, focus, None)):
             map_view["data"][first_dynamic + position] = trace.to_plotly_json()
     return (
         map_view, cards, _stage_strip(step["stage"], step["batch"]),
-        _parcel_detail(run, index, parcel), platform_cards,
+        _batch_detail(run, index), platform_cards,
         f"Frame {step['batch']} · {stage[1]} · {index + 1}/{len(run['steps'])}",
         "Loaded replay" if run["meta"]["source"] == "replay" else "Computed run · stage replay",
         caption,

@@ -93,7 +93,7 @@ button, input { font: inherit; }
 .stage-item strong { font-size: 12px; }
 .stage-item small { font-size: 10px; margin-top: 3px; }
 .stage-arrow { position: absolute; right: 2px; color: #b8c8db; }
-.inspection-grid { display: grid; grid-template-columns: minmax(0, 1.55fr) minmax(370px, 1fr); gap: 18px; align-items: start; }
+.inspection-grid { display: grid; grid-template-columns: minmax(0, 1fr); gap: 18px; align-items: start; }
 .map-card { min-height: 630px; }
 .map-card .js-plotly-plot { min-height: 535px; }
 .map-toolbar { display: flex; align-items: center; justify-content: space-between; gap: 8px; flex-wrap: wrap; margin: -2px 0 2px; }
@@ -108,6 +108,12 @@ button, input { font: inherit; }
 .platform-stat-grid .metric-value { font-size: 19px; }
 .details-card .field { margin-bottom: 15px; }
 .parcel-details { padding-right: 5px; }
+.batch-table-wrap { max-height: 360px; overflow: auto; margin-top: 12px; border: 1px solid #e5ecf4; border-radius: 8px; }
+.batch-table-wrap .data-table { min-width: 900px; }
+.batch-table-wrap th { position: sticky; top: 0; background: #fff; z-index: 1; }
+.batch-table-wrap code { display: block; max-width: 190px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: #8394a8; font-size: 10px; }
+.auction-list { margin-top: 18px; }
+.auction-list > h4 { margin-bottom: 5px; }
 .parcel-title { display: flex; justify-content: space-between; align-items: center; gap: 12px; margin-bottom: 10px; }
 .parcel-title h3 { margin: 4px 0; font-size: 19px; }
 .status-badge { color: #215b9e; background: #eaf2ff; font-size: 11px; padding: 6px 9px; border-radius: 6px; white-space: nowrap; }

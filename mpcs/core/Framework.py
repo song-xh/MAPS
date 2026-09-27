@@ -1883,10 +1883,11 @@ class Environment:
                     self._serving_quality,
                 )
             )
+            if not awards:
+                self._cross_failed_attempts += 1
+                continue
             if len(awards) != 1:
-                raise ValueError(
-                    "auctioneer must return exactly one award for a valid lot"
-                )
+                raise ValueError("auctioneer returned multiple awards for one lot")
             cross_result = self._settlement.commit_cross_awards(
                 world=working_world,
                 verification=verification,

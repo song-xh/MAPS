@@ -1,52 +1,32 @@
-# MAPS 系统演示设计
+# MAPS system demo design
 
-## 定位
+## Purpose
 
-**MAPS: A Multi-Platform Auction-aware Parcel Assignment System for Cooperative Urban Logistics** 是现有 `mpcs` 同步仿真环境的本地交互演示。观众亲自配置一个小场景，运行真实算法，在同一轮物理帧中跟踪 `workload → parcel → local decision → local matching → cross-platform auction → settlement`，再比较不同设置的结果。
+MAPS is a local interactive demonstration of the existing `mpcs` simulator for the PVLDB Demonstrations Track. A visitor selects a workload, platform order dates, a time window, fleet settings and decision policies, runs an episode, and replays each physical frame through **workload → parcel → local decision → auction → settlement**. Inspection explains the decisions for the whole pending batch. Analysis ends at the selected arrival window even when the simulator continues through pickup deadlines.
 
-VLDB 2026 Demo CFP 要求明确观众体验、系统架构、功能、使用场景和交互方式，并偏好参与度高的演示；本设计把“改变参数并观察一件包裹为何走向另一个平台”作为主要互动。规则来源：https://www.vldb.org/2026/call-for-demonstrations.html 。实际投稿年度需再核对该年度 CFP。
+## Simulation contract
 
-## 事实边界
+- One selected real city supplies the processed operational road network. Each platform uses a distinct order date from that city. Counts displayed and sampled refer to parsed, deduplicated orders within the operational area.
+- The simulator advances beyond the arrival window to the latest pickup deadline. Analysis uses the last frame inside the arrival window for assignment and ledger charts.
+- The interface exposes dataset, train/validation/test split, platform dates, pickup and dropoff count or all eligible orders, time window, fleet size, service radius, deadline, frame interval, seed, policies, local matcher and cross mechanism.
+- When the focus platform uses `rl-capa`, it is the **sole primary platform** for that run. Its own local matcher follows the current CAMA reference: feasible local pairs contribute `(1 − ζ) × fare` to a cumulative mean; the dynamic release threshold is `ω` times that mean. The reference defaults are `ζ = 0.2` and `ω = 0.7`. Other platforms retain their own workload and local policy, and provide vehicles for the primary platform's auction.
+- For each released primary parcel, every partner with a route-feasible EV submits one FPSA courier bid. The platform adds its quality-adjusted `μ₂ × fare` markup; bids above `(μ₁ + μ₂) × fare` are invalid. Lowest valid platform bid wins. Payment is the second-lowest valid bid, or the sole valid bid when unopposed. The primary platform never bids for another platform's parcel. Here `μ₁ = 0.3`; the existing cooperation sharing control supplies both the FPSA platform sharing rate and `μ₂`.
+- The `rl-capa` option is the MAPS baseline with CAMA and DAPA decisions. It does not load or infer the reference repository's actor-critic policy.
 
-- 运行引擎是当前 `mpcs`，不是旧设计文档所述的 CAPA 仓库。平台策略先选 `LOCAL / RELEASE / WAIT`，环境再进行统一本地匹配和跨平台服务。
-- `paper` 机制对已验证的平台冻结报价执行反向 Vickrey：最低价获胜，多有效报价按次低价支付，单有效报价按自身报价支付。`regional-fixed` 与 `pool-random` 使用各自固定支付规则。
-- 展示包裹与车辆的来源平台；目标平台始终以描边和顶部聚焦卡突出。连线表示任务与车辆的匹配关系，除非使用了真实路网路线数据，不称为实际行驶轨迹。
-- 地图底层读取本次所选数据集已处理、实际用于路径计算的 RoadNetwork 节点坐标和全部邻接边。互为反向的有向边合并为一条可视连接线，完整路网的节点数、有向边数和绘制线段数同时标出。原始弯曲道路几何未保留，因此线段表示处理后路网的真实节点连接。Station 使用真实路网节点位置；地图只叠加 Station、车辆、包裹及匹配关系，不绘制 Region。可滚轮缩放、拖动平移、双击复位；图层开关不改变仿真。
-- Shanghai 的 Station 网格根据固定参考订单日坐标的 1%–99% 范围生成，站点吸附到最近的实际路网节点；原始订单仍沿用自身地图匹配距离约束。Station 网格由固定参考日生成，使各平台变更订单日期时沿用同一城市运营范围。真实数据界面的车辆与期限初值为每平台 4 辆和 720 秒，可在面板上调整。
-- `operating_profit` 是环境经济账本的合计，`assignment_rate` 是已分配取件数/总取件数；完成（取件/卸货）与分配分别呈现，不混称。页面数字从本次运行的 `Environment.metrics` 和 `JointStepResult` 获得。Analysis 在用户选择的到达时间窗末尾截断，逐分钟收益是相邻帧累计经济账本的增量，汇总与累计图、分钟图采用同一截断帧。
-- 观测适配层只记录引擎已经计算的候选插入、匹配提案、候选平台的意向、已验证报价、拍卖结果和结算回执；没有记录的字段标注“未记录”。不根据汇总值推造中间步骤。
+## Inspection contract
 
-## 用户旅程与界面
+The five-stage strip and timeline select a batch and process stage. The batch table shows each pending parcel's identifier, origin, status, pool action, local match and cross match. The local candidate table exposes actual feasible EVs, route insertion distance and ETA; RL-CAPA adds revenue score and dynamic threshold. The auction lists every eligible partner intent, courier and platform bids, invalid bids, winner and payment per released parcel. The settlement stage shows committed origin utility and cross payment. In RL-CAPA mode the batch table follows the primary platform's parcels while partner bids remain visible.
 
-导航是三个紧凑工作区，细节在工作区内展开，而非增设管理页面。
+The map draws the full processed network scale and station nodes. It plots only parcels that are still waiting or in the cross pool. EV points advance along the shortest-path nodes according to the active leg's remaining distance, and a solid line follows each current navigation path. Dashed connectors show local or cross match relations. Platform colors and a focus outline distinguish ownership. Scroll zoom, pan and reset remain available.
 
-1. **Simulation / 场景运行**：选择同城数据集、train / validation / test、各平台互不重复的订单日期和订单到达时间窗；配置每平台取件与既有送件的指定抽样数或窗口内全部可用订单。页面显示经过解析、去重和运营网格过滤后的 pickup / dropoff 数量。继续配置目标平台、分池策略、匹配器、跨平台机制、seed、车辆、期限及物理帧间隔。仿真在到达窗结束后继续运行至末尾任务期限，阶段和物理帧进度以进度条呈现。Synthetic 默认是小场景，按指定生成数量运行。
-2. **Inspection / 决策透视**：横向五段流程条、播放/暂停/前后单步/拖动时间轴、可缩放平移的当前批次地图。地图默认叠加完整处理后路网与 Station，可独立切换图层。包裹档案显示到达与期限、策略动作、本地候选与提交匹配、有效报价与胜者、车辆和结算回执；平台档案显示当前待处理数、本帧决策、累计本地及跨平台匹配、累计总收益、本地/跨平台及既有送件收益。界面文本使用英文，时间显示为 HH:MM。
-3. **Analysis / 结果分析**：只统计所选到达时间窗内的分配、取件、卸货、经济账本和来源→服务平台流向；同时呈现累计账本收益和每分钟账本增量。窗口后执行保留在 Inspection 回放，不进入 Analysis。每次运行自动保存回放产物，可重新加载查看。
+The platform archive shows pending counts, this-frame local and release decisions, cumulative matches, total ledger profit and its local, cross and dropoff components. English labels and HH:MM timestamps are used throughout.
 
-首屏优先回答“谁的包裹、谁来服务、为什么跨平台、支付多少”。从地图点选进入细节；颜色表示平台，形状区分包裹与车辆，状态用标签补充。P1–P4 使用固定高区分度颜色；更多平台循环调色板并始终显示平台文本。目标平台用粗描边与浅色聚焦带。导航、配置和图表在 1366px 演示屏可读，窄屏垂直堆叠。
+## Analysis and replay
 
-## 结构与数据流
+Cumulative and one-minute ledger profit use the same window cutoff, so minute deltas sum to the displayed window total. The assignment, completion, platform profit and origin-to-serving charts come from the simulator's metrics and receipts. The run saves a local JSON replay; loading requires the current batch trace schema.
 
-```mermaid
-flowchart LR
-  C[Dash 参数] --> P[mpcs 配置与场景准备]
-  P --> E[Environment.reset / step]
-  E --> O[只读过程记录]
-  O --> R[回放帧和结算明细]
-  R --> I[Simulation / Inspection / Analysis]
-```
+## Implementation
 
-代码放在 `maps_demo/`，Dash + Plotly + CSS 与现有 Python 包同进程运行。`engine.py` 负责配置、运行与过程记录；`geography.py` 序列化本次处理后路网与 Station；`figures.py` 生成视图；`app.py` 管理控件和回放索引。完整路网仅在载入场景或切换图层时传给地图，逐帧回放只更新包裹、车辆与匹配线。运行后保存 `output/maps-demo/latest.json`，供重启后加载真实回放；浏览器保存当前运行编号，详细产物留在本机进程。界面状态仅在本机单会话使用，任务规模以过程展示的小场景为主。
+`maps_demo/app.py` owns Dash controls and playback. `engine.py` records batch decisions, world snapshots and receipts from `Environment`. `capa.py` computes exact-route FPSA bids and DAPA platform awards for the selected primary platform. `geography.py` exports the complete processed road network and stations. `figures.py` renders maps and analysis charts. The demo uses the local Python process, with no login or external service.
 
-## 验收情境
-
-1. 选择 synthetic、4 平台、P1 目标，设置每平台策略、匹配器和机制；点击运行后至少出现一个真实取件任务及完整批次时间轴。
-2. 点击任意包裹，流程条和地图与当前批次一致；本地分配显示实际车辆，跨平台分配显示有效报价、赢家、付款和双方回执，等待或过期有明确状态。
-3. 变更 split、订单日期、时间窗、抽样数或机制重跑，地图和账本来自本次数据与环境；Analysis 截断值等于窗内最后一帧的账本值，每分钟增量之和等于该值。
-4. 重新运行会替换当前会话的结果；加载回放可恢复已保存产物。没有相应阶段的历史回放只显示已记录事实。
-5. 无网络底图、数据库、训练、登录或外部服务也可启动 synthetic 演示。
-
-## 与旧设计文件的关系
-
-`01–06` 是此前 CAPA 两标签页方案和研究核查。当前实施以本文件与现有 `mpcs` 源码为准；旧方案的术语及指标只在能由现有引擎证实时借用。Catcher 提供 Dash 回调、点击地图联动与分区图表的交互参考；MAPS 的指标必须由本次仿真产生。
+The earlier `01–06` documents in this directory describe a prior CAPA two-tab concept. This document describes the implemented MAPS demo.

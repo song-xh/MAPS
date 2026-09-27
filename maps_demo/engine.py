@@ -5,11 +5,12 @@ from __future__ import annotations
 from contextlib import contextmanager
 from dataclasses import replace
 from functools import lru_cache
-from math import ceil, fsum
+from math import ceil, fsum, isfinite
 from pathlib import Path
 from typing import Any
 
 from maps_demo.geography import prepared_geography
+from maps_demo.capa import CAPAAuctioneer, CAPABidder, FIRST_LAYER_SHARE
 from mpcs.config import DatasetSplit, PlatformSourceFiles
 from mpcs.core.Domain import ParcelAction, ParcelDecision, PlatformActionBatch
 from mpcs.core.Framework import Environment
@@ -223,7 +224,45 @@ def _point(point: Any) -> list[float]:
     return [float(point.longitude_deg), float(point.latitude_deg)]
 
 
-def _world_snapshot(environment: Environment) -> dict[str, Any]:
+def _vehicle_display(vehicle: Any, road: Any, path_cache: dict) -> tuple[list[float], list[list[float]]]:
+    def path(start: str, end: str) -> tuple[list[list[float]], list[float]]:
+        key = (start, end)
+        if key not in path_cache:
+            nodes = road.shortest_path(start, end) or (start,)
+            path_cache[key] = (
+                [_point(road.location(node)) for node in nodes],
+                [road.shortest_distance_m(left, right) for left, right in zip(nodes, nodes[1:])],
+            )
+        return path_cache[key]
+
+    stops = [stop.road_node_id for stop in vehicle.route_stops]
+    if not stops:
+        return _point(vehicle.current_location), []
+    segment, edge_lengths = path(vehicle.current_road_node_id, stops[0])
+    if vehicle.active_leg_target_stop_id is None:
+        point = _point(vehicle.current_location)
+        remaining = segment
+    else:
+        progress_m = max(0.0, road.shortest_distance_m(vehicle.current_road_node_id, stops[0])
+                         - vehicle.active_leg_remaining_distance_km * 1000.0)
+        remaining = segment
+        point = segment[0]
+        for index, edge_m in enumerate(edge_lengths):
+            start, end = segment[index:index + 2]
+            if progress_m <= edge_m or index == len(segment) - 2:
+                fraction = min(1.0, max(0.0, progress_m / edge_m)) if edge_m else 0.0
+                point = [start[0] + (end[0] - start[0]) * fraction,
+                         start[1] + (end[1] - start[1]) * fraction]
+                remaining = [point, *segment[index + 1:]]
+                break
+            progress_m -= edge_m
+    navigation = list(remaining)
+    for start, end in zip(stops, stops[1:]):
+        navigation.extend(path(start, end)[0][1:])
+    return point, navigation
+
+
+def _world_snapshot(environment: Environment, road: Any, path_cache: dict) -> dict[str, Any]:
     # The demo is a trusted spectator of the single local simulation.
     world = environment._world
     assert world is not None
@@ -240,13 +279,14 @@ def _world_snapshot(environment: Environment) -> dict[str, Any]:
         "vehicles": {
             vehicle_id: {
                 "platform": vehicle.platform_id,
-                "point": _point(vehicle.current_location),
+                "point": display[0], "navigation": display[1],
                 "status": vehicle.status.value,
                 "load": vehicle.load_count,
                 "capacity": vehicle.max_capacity,
                 "route": [stop.road_node_id for stop in vehicle.route_stops],
             }
             for vehicle_id, vehicle in world.vehicles_by_id.items()
+            for display in (_vehicle_display(vehicle, road, path_cache),)
         },
     }
 
@@ -330,13 +370,19 @@ class _RecordingAuctioneer:
 
     def settle(self, lots: Any, intents: Any, quality: Any) -> Any:
         awards = self.delegate.settle(lots, intents, quality)
-        for intent in intents:
-            bid = intent.server_payload
-            self.trace["valid_bids"].append({
-                "token": bid.parcel_token,
-                "platform": bid.bidder_platform_id,
-                "amount": float(bid.frozen_offer_amount),
-            })
+        if hasattr(self.delegate, "last_bids"):
+            self.trace["platform_bids"].extend(self.delegate.last_bids)
+            self.trace["valid_bids"].extend(
+                bid for bid in self.delegate.last_bids if bid["valid"]
+            )
+        else:
+            for intent in intents:
+                bid = intent.server_payload
+                self.trace["valid_bids"].append({
+                    "token": bid.parcel_token,
+                    "platform": bid.bidder_platform_id,
+                    "amount": float(bid.frozen_offer_amount), "valid": True,
+                })
         for award in awards:
             self.trace["awards"].append({
                 "token": award.parcel_token,
@@ -351,14 +397,14 @@ class _RecordingAuctioneer:
 def _empty_trace() -> dict[str, Any]:
     return {
         "local_options": [], "local_matches": [], "tokens": {},
-        "intent_candidates": [], "valid_bids": [], "awards": [],
+        "intent_candidates": [], "platform_bids": [], "valid_bids": [], "awards": [],
     }
 
 
 def _trace_for_frame(trace: dict[str, Any], result: Any) -> dict[str, Any]:
     tokens = trace["tokens"]
     details: dict[str, dict[str, Any]] = {}
-    for name in ("local_options", "local_matches", "intent_candidates", "valid_bids", "awards"):
+    for name in ("local_options", "local_matches", "intent_candidates", "platform_bids", "valid_bids", "awards"):
         for entry in trace[name]:
             parcel_id = entry.get("parcel_id") or tokens.get(entry.get("token"))
             if parcel_id is None:
@@ -430,6 +476,12 @@ def run_demo(settings: dict[str, Any], progress=None) -> dict[str, Any]:
     policies = {platform: settings["policies"][platform] for platform in config.platform_ids}
     if any(policy not in POLICIES for policy in policies.values()):
         raise ValueError("Unknown platform policy")
+    primary = settings.get("primary_platform", config.platform_ids[0])
+    capa_platforms = [platform for platform, policy in policies.items() if policy == "rl-capa"]
+    if capa_platforms and capa_platforms != [primary]:
+        raise ValueError("Select exactly one RL-CAPA policy on the focus platform")
+    if capa_platforms and config.auction.sharing_rate > 1.0 - FIRST_LAYER_SHARE:
+        raise ValueError("DAPA requires cooperation sharing rate ≤ 0.7 (μ1 = 0.3)")
     seed = int(settings["seed"])
     split = DatasetSplit(settings.get("split", "test"))
     if progress:
@@ -449,14 +501,32 @@ def run_demo(settings: dict[str, Any], progress=None) -> dict[str, Any]:
             sessions[policy] = registry.create_pool_policy(policy, config, prepared, seed)
         trace = _empty_trace()
         kwargs = dict(builtin_cross_mechanisms()[settings["mechanism"]](config, prepared, seed))
+        matchers = dict(build_local_matchers(config.platform_ids, settings["matcher"]))
+        for platform, policy in policies.items():
+            if policy == "rl-capa":
+                matchers[platform] = sessions[policy].local_matchers[platform]
         kwargs["local_matchers"] = {
-            platform: _RecordingMatcher(matcher, trace)
-            for platform, matcher in build_local_matchers(config.platform_ids, settings["matcher"]).items()
+            platform: _RecordingMatcher(matcher, trace) for platform, matcher in matchers.items()
         }
         kwargs["release_sanitizers"] = {
             platform: _RecordingSanitizer(sanitizer, trace)
             for platform, sanitizer in kwargs["release_sanitizers"].items()
         }
+        primary = settings.get("primary_platform", config.platform_ids[0])
+        capa = policies[primary] == "rl-capa"
+        if capa:
+            parcels = {
+                parcel.parcel_id: parcel
+                for dataset in prepared.task_partition.datasets.values()
+                for parcel in dataset.pickup_parcels
+            }
+            kwargs["cross_bidders"] = {
+                platform: CAPABidder(platform, primary, parcels, trace["tokens"],
+                                     prepared.road_network, prepared.station_index,
+                                     config.auction.sharing_rate)
+                for platform in config.platform_ids
+            }
+            kwargs["auctioneer"] = CAPAAuctioneer(config.auction.sharing_rate, config.platform_ids)
         kwargs["cross_bidders"] = {
             platform: _RecordingBidder(bidder, trace)
             for platform, bidder in kwargs["cross_bidders"].items()
@@ -464,14 +534,17 @@ def run_demo(settings: dict[str, Any], progress=None) -> dict[str, Any]:
         kwargs["auctioneer"] = _RecordingAuctioneer(kwargs["auctioneer"], trace)
         environment = Environment.from_prepared(config=config, prepared=prepared, **kwargs)
         observations = environment.reset(seed)
+        path_cache = {}
         frame_total = ceil((config.simulation.end_time_s - config.simulation.start_time_s) / config.simulation.step_size_s)
         steps: list[dict[str, Any]] = []
         batches: list[dict[str, Any]] = []
         batch = 0
         while not environment.done:
             batch += 1
-            before = _world_snapshot(environment)
+            before = _world_snapshot(environment, prepared.road_network, path_cache)
             decision_time = environment.current_time_s
+            batch_parcels = [pid for pid, state in before["parcels"].items()
+                             if state["status"] in {"waiting", "cross_pool", "public_this_step"}]
             for value in trace.values():
                 value.clear()
             actions = {}
@@ -494,8 +567,15 @@ def run_demo(settings: dict[str, Any], progress=None) -> dict[str, Any]:
                 for action_batch in actions.values()
                 for decision in action_batch.decisions
             }
+            thresholds = {}
+            for platform, policy in policies.items():
+                if policy == "rl-capa":
+                    algorithm = sessions[policy].policies[platform]._algorithm
+                    trace["local_options"].extend(algorithm.last_candidate_pairs)
+                    thresholds[platform] = (algorithm.last_threshold
+                                            if isfinite(algorithm.last_threshold) else None)
             result = environment.step(actions)
-            after = _world_snapshot(environment)
+            after = _world_snapshot(environment, prepared.road_network, path_cache)
             metrics = environment.metrics
             pickup_progress = environment.pickup_progress_snapshot
             details = _trace_for_frame(trace, result)
@@ -555,6 +635,8 @@ def run_demo(settings: dict[str, Any], progress=None) -> dict[str, Any]:
                     "index": len(steps), "batch": batch, "stage": stage,
                     "decision_time_s": decision_time, "time_s": record["time_s"],
                     "state": after if stage == "settlement" else before,
+                    "batch_parcels": batch_parcels,
+                    "thresholds": thresholds,
                     "decisions": decisions,
                     "details": details,
                     "metrics": record if stage == "settlement" else (batches[-2] if len(batches) > 1 else {
@@ -581,7 +663,9 @@ def run_demo(settings: dict[str, Any], progress=None) -> dict[str, Any]:
                 "dataset": settings["dataset"], "split": split.value, "seed": seed,
                 "analysis_end_s": config.dataset.arrival_window_end_s,
                 "platforms": list(config.platform_ids), "policies": policies,
-                "matcher": settings["matcher"], "mechanism": settings["mechanism"],
+                "matcher": settings["matcher"],
+                "mechanism": "dapa" if capa else settings["mechanism"],
+                "primary_platform": primary,
                 "settings": settings, "source": "computed",
             },
             "catalog": catalog, "geography": geography, "steps": steps, "batches": batches,

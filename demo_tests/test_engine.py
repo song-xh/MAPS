@@ -1,9 +1,14 @@
 """Evidence that the demo replay reflects the executed MPCS episode."""
 
 from math import isclose
+from types import SimpleNamespace
 
-from maps_demo.engine import build_config, run_demo, source_options
-from maps_demo.figures import minute_profit_figure
+import networkx as nx
+
+from maps_demo.engine import _vehicle_display, build_config, run_demo, source_options
+from maps_demo.capa import CAPAAuctioneer
+from maps_demo.figures import map_dynamic_traces, minute_profit_figure
+from mpcs.core.RoadNetwork import RoadNetwork
 
 
 def settings(mechanism="paper"):
@@ -104,3 +109,73 @@ def test_real_date_selection_runs_with_selected_split_and_window():
     assert run["summary"]["total"] == len(run["catalog"]) == 8
     assert run["summary"]["batch"] == 2
     assert len(run["batches"]) == 4
+
+
+def test_rl_capa_batch_uses_all_eligible_partner_bids_and_dapa_payment():
+    selected = settings()
+    selected.update(primary_platform="P1", vehicles_per_platform=1,
+                    pickups_per_platform=10, service_radius_km=0.1)
+    selected["policies"]["P1"] = "rl-capa"
+    run = run_demo(selected)
+    assert run["meta"]["mechanism"] == "dapa"
+    assert run["summary"]["cross_count"] > 0
+    assert any(step["batch_parcels"] for step in run["steps"])
+    revenue_history = []
+    for step in run["steps"]:
+        if step["stage"] != "settlement":
+            continue
+        revenue_history.extend(
+            option["revenue_score"]
+            for parcel_id, detail in step["details"].items()
+            if run["catalog"][parcel_id]["origin"] == "P1"
+            for option in detail.get("local_options", ())
+            if "revenue_score" in option
+        )
+        if revenue_history:
+            assert isclose(step["thresholds"]["P1"],
+                           0.7 * sum(revenue_history) / len(revenue_history))
+        for parcel_id, detail in step["details"].items():
+            for award in detail.get("awards", ()):
+                bids = sorted(bid["amount"] for bid in detail["valid_bids"] if bid["valid"])
+                assert run["catalog"][parcel_id]["origin"] == "P1"
+                assert {bid["platform"] for bid in detail["valid_bids"]} <= {"P2", "P3", "P4"}
+                assert isclose(award["winner_bid"], bids[0])
+                assert isclose(award["payment"], bids[1] if len(bids) > 1 else bids[0])
+        parcel_traces = (trace for trace in map_dynamic_traces(run, step["index"], "P1", None)
+                         if trace.name and trace.name.endswith("parcels"))
+        for trace in parcel_traces:
+            for _, parcel_id, _ in trace.customdata:
+                assert step["state"]["parcels"][parcel_id]["status"] in {
+                    "waiting", "cross_pool", "public_this_step",
+                }
+
+
+def test_vehicle_display_advances_on_road_path():
+    graph = nx.Graph()
+    for index in range(3):
+        graph.add_node(f"n{index}", x=float(index), y=0.0)
+    graph.add_edge("n0", "n1", length_m=100.0)
+    graph.add_edge("n1", "n2", length_m=100.0)
+    road = RoadNetwork(graph, source_cache_size=4)
+    try:
+        vehicle = SimpleNamespace(
+            current_road_node_id="n0", current_location=road.location("n0"),
+            active_leg_target_stop_id="s1", active_leg_remaining_distance_km=0.15,
+            route_stops=[SimpleNamespace(road_node_id="n2")],
+        )
+        point, navigation = _vehicle_display(vehicle, road, {})
+        assert point == [0.5, 0.0]
+        assert navigation == [[0.5, 0.0], [1.0, 0.0], [2.0, 0.0]]
+    finally:
+        road.close()
+
+
+def test_dapa_rejects_bids_above_primary_payment_limit():
+    auction = CAPAAuctioneer(sharing_rate=0.3, platform_ids=("P1", "P2"))
+    lot = SimpleNamespace(parcel_token="parcel", fare_amount=1.0, decision_frame_id="frame")
+    intent = SimpleNamespace(server_payload=SimpleNamespace(
+        parcel_token="parcel", bidder_platform_id="P2", frozen_offer_amount=1.0,
+    ))
+    quality = SimpleNamespace(scores_by_platform_id={"P2": 0.5})
+    assert auction.settle((lot,), (intent,), quality) == ()
+    assert auction.last_bids[0]["valid"] is False
