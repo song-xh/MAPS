@@ -69,7 +69,6 @@ button, input { font: inherit; }
 .advanced .field-grid { padding-top: 3px; }
 .run-bar { display: flex; align-items: center; justify-content: space-between; gap: 20px; background: #112a50; color: white; border-radius: 15px; padding: 18px 23px; margin-top: 18px; }
 .run-bar .eyebrow { color: #83b5ff; }
-.run-bar p { margin: 6px 0 0; font-size: 12px; color: #bdd0e8; }
 .button-row { display: flex; align-items: center; gap: 9px; }
 .button { cursor: pointer; border-radius: 9px; border: 1px solid #c8d6e9; padding: 9px 16px; font-size: 12px; font-weight: 800; white-space: nowrap; transition: .15s; }
 .button:hover { transform: translateY(-1px); box-shadow: 0 5px 12px #1d3a6722; }

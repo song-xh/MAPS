@@ -148,8 +148,7 @@ def _simulation_page() -> html.Div:
     return html.Div(id="simulation-page", className="page", children=[
         html.Div(className="page-intro", children=[
             html.Div([html.Span("01 / SIMULATION", className="eyebrow"),
-                      html.H2("Configure a cooperative assignment run"),
-                      html.P("Set the workload and target algorithm. Partner platforms handle their own parcels locally and provide spare courier capacity.")]),
+                      html.H2("Configure a cooperative assignment run")]),
             html.Div(id="dirty-note", className="dirty-note"),
         ]),
         html.Div(className="simulation-grid", children=[
@@ -162,8 +161,7 @@ def _simulation_page() -> html.Div:
                 _field("Data split", _select("split", [(name.title(), name) for name in ("train", "validation", "test")], "test")),
                 _field("Platforms", _select("platforms", [(str(n), n) for n in range(2, 17)], 4),
                        "Synthetic is adjustable; real datasets use a fixed platform count."),
-                _field("Target platform", _select("focus-platform", [(f"P{i}", f"P{i}") for i in range(1, 5)], "P1"),
-                       "Only this platform uses the selected algorithm and releases parcels."),
+                _field("Target platform", _select("focus-platform", [(f"P{i}", f"P{i}") for i in range(1, 5)], "P1")),
                 _field("Random seed", _number("seed", 11, minimum=0, maximum=2147483647)),
                 _field("Arrival window start", dcc.Input(id="window-start", type="time", value="00:00", className="input")),
                 _field("Arrival window end", dcc.Input(id="window-end", type="time", value="00:01", className="input")),
@@ -193,10 +191,8 @@ def _simulation_page() -> html.Div:
                         id="comparison-algorithms", multi=True,
                         options=[{"label": POLICY_LABELS[name], "value": name} for name in POLICIES],
                         value=["rl-capa", "impgta", "mra"], className="select multi-select",
-                    ), "Every algorithm receives the same sampled workload and courier fleet."),
+                    )),
                 ]),
-                html.P("Partner platforms use a fixed local Greedy matcher in every run. "
-                       "The target algorithm controls local decisions and cooperation.", className="hint-line"),
                 html.Details(className="advanced", children=[
                     html.Summary("More simulation parameters"),
                     html.Div(className="field-grid", children=[
@@ -208,8 +204,7 @@ def _simulation_page() -> html.Div:
             ]), "B / METHOD"),
         ]),
         html.Div(className="run-bar", children=[
-            html.Div([html.Span("RUN A SCENARIO", className="eyebrow"),
-                      html.P("Collect all platform actions per frame, then match, auction and settle.")]),
+            html.Div([html.Span("RUN A SCENARIO", className="eyebrow")]),
             html.Div(className="button-row", children=[
                 html.Button("Run simulation →", id="run-button", className="button primary"),
                 html.Button("Load last replay", id="load-button", className="button secondary"),
@@ -228,8 +223,7 @@ def _inspection_page() -> html.Div:
     return html.Div(id="inspection-page", className="page", style={"display": "none"}, children=[
         html.Div(className="page-intro", children=[
             html.Div([html.Span("02 / INSPECTION", className="eyebrow"),
-                      html.H2("Inspect each decision batch"),
-                      html.P("Step through all pending parcels, local matching, partner bids and settlement in each frame.")]),
+                      html.H2("Inspect each decision batch")]),
             html.Div(id="inspection-source", className="source-pill"),
         ]),
         html.Div(id="current-metrics", className="metric-grid"),
@@ -313,7 +307,7 @@ app.layout = html.Div(className="app-shell", children=[
         ]),
         _simulation_page(), _inspection_page(), _analysis_page(),
     ]),
-    html.Footer("MAPS · Local computation and replay / current MPCS mechanism", className="footer"),
+    html.Footer("MAPS · Local computation and replay", className="footer"),
 ])
 
 

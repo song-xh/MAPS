@@ -1,84 +1,63 @@
 # MAPS: A Multi-Platform Auction-aware Parcel Assignment System for Cooperative Urban Logistics
 
-[English README](README.en.md) | 中文说明
+[English](README.en.md) | [中文](README.md)
 
-MAPS 使用 MPCS 多平台空间众包仿真环境，内置配送员包裹取送场景。环境在同一物理帧收集全部平台动作，再统一推进任务分配、跨平台匹配、路线、结算和指标。数据准备、算法和实验流程各有独立接口。
+MAPS 是基于 MPCS 多平台包裹分配仿真器构建的交互式系统演示。观众可以配置工作负载、运行仿真，并沿着**工作负载 → 包裹 → 本地决策 → 竞价 → 结算**追踪目标平台的取件包裹。本文说明系统功能、研究基础、架构和观众交互，对应 [VLDB Demonstrations Track](https://vldb.org/2026/call-for-demonstrations.html) 强调的内容。
 
-## 交互式系统演示
+## 研究基础
+
+MAPS 依托 Guanglei Zhu 等人的研究手稿 *Auction-Aware Crowdsourced Parcel Assignment for Cooperative Urban Logistics*。该研究讨论跨平台城市物流（CPUL）问题：平台在配送员执行既有送件任务时分配持续到达的取件包裹，并可使用合作平台的空闲配送员。
+
+| 研究组成 | 手稿提出的方法 |
+| --- | --- |
+| CAPA 与 CAMA | CAPA 按批处理到达的包裹。CAMA 根据剩余容量和路线绕行评估可行的本地配送员与包裹配对，使用动态效用阈值，并将未在本地分配的包裹送入竞价池。 |
+| DLAM 与 DAPA | 双层竞价首先通过第一价格密封竞价在各合作平台内部选择配送员，再通过平台间的逆向维克里竞价确定服务平台和支付额。 |
+| RL-CAPA | 两个学习策略自适应地调整分配过程：第一阶段选择批次时长，第二阶段逐包裹决定延后至下一批还是进入竞价池。论文以收益、完成率和批次处理时间研究该自适应方法及 CAPA。 |
+
+MAPS 中的 **RL-CAPA** 选项按照 Simulation 中选择的帧间隔运行当前 MPCS 的 CAMA/DAPA 分配流程。Inspection 展示该次运行记录的本地候选、阈值、合作平台报价、获胜分配和结算结果。
+
+## 系统演示
+
+```mermaid
+flowchart LR
+    A[数据集和界面设置] --> B[MPCS 场景准备]
+    B --> C[共享物理帧]
+    C --> D[本地匹配与合作平台竞价]
+    D --> E[结算与 JSON 回放]
+    E --> F[批次检查与时间窗分析]
+```
+
+| 模块 | 观众操作与展示结果 |
+| --- | --- |
+| **Simulation** | 选择数据集和划分、到达时间窗、各平台同城且互不重复的订单日期、取件与送件采样数或全部有效订单、配送员数量、服务半径、期限、帧间隔、随机种子、目标平台及一个或多个算法；运行场景并查看进度和目标平台结果摘要。 |
+| **Inspection** | 选择算法，播放或逐步查看批次与五个处理阶段；检查包裹状态、本地候选、合作平台报价、支付以及目标平台决策档案；在可缩放平移的完整处理后路网上查看站点、移动中的配送员及其路线、未匹配的目标包裹和匹配连线。 |
+| **Analysis** | 对比目标平台的 OP、AR、BPT、本地与跨平台分配、累计与逐分钟账本收益，以及目标平台到服务平台的流向；下载回放。 |
+
+选定的目标平台对自己的包裹执行待比较的决策。合作平台先在本地处理自己的任务，再提供剩余的可行配送员运力。对比运行使用相同的采样订单、初始配送员队伍和随机种子。平台颜色区分配送员，目标平台会突出显示。地图不绘制区域多边形。
+
+## 安装与启动
+
+需要 Python **3.11 或更高版本**。在仓库根目录运行：
 
 ```powershell
 python -m pip install -e ".[demo]"
 python -m maps_demo.app
 ```
 
-打开 `http://127.0.0.1:8050`。默认 synthetic 场景无需下载数据。Simulation 可选择 train / validation / test、订单到达时间窗、同城各平台的不同订单日期，并在采样前查看有效 pickup / dropoff 数量；取件和既有送件可设置数量或选取时间窗内全部有效订单。选择目标平台后，可运行 RL-CAPA、ImpGTA、MRA、Greedy、RamCOM、LocalSum 中的单个算法，或在同一订单、配送员队伍与随机种子下比较多个算法。合作平台只对自身订单进行本地匹配，再以剩余运力服务目标平台释放的订单。运行阶段和物理帧以进度条展示。Inspection 可切换算法回放，在完整处理后路网地图上叠加 Station、配送员、目标包裹和匹配关系，可缩放平移、按阶段查看目标平台的批次决策档案。Analysis 按所选时间窗截断，展示目标平台 OP、AR、BPT、累计与逐分钟账本收益及跨平台服务流向。窗口后执行仍保留在回放中。每次运行的回放保存在 `output/maps-demo/latest.json`，页面可重新加载或下载该文件。设计与指标口径见 [MAPS 系统演示设计](docs/demo-design/07-MAPS系统演示设计.md)。
+打开 **http://127.0.0.1:8050**。默认 `Synthetic` 数据集不需要外部数据。也可以使用安装后的 `maps-demo` 命令启动。
 
-当前 `rl-capa` 选项是 MPCS 的非学习基线，不需要模型文件；Demo 的核心是单次测试场景推演，不执行 PPO 训练。成都与上海预设依赖本地 `dataset/` 数据。
+### 操作示例
 
-## 快速上手
+1. 在 **Simulation** 中保留 `Synthetic`、`Test`、目标平台 `P1` 和随机种子 `11`。将 **Pickup sample** 设为 `Count`、**Pickups per platform** 设为 `10`、**Dropoffs per platform** 设为 `0`、**Couriers per platform** 设为 `2`、到达时间窗设为 `00:00–00:01`。选择 **RL-CAPA** 并点击 **Run simulation**。该配置会产生跨平台匹配。
+2. 在 **Inspection** 中使用时间线箭头或 **Play**，依次查看 **Workload**、**Parcel**、**Local decision**、**Auction** 和 **Settlement**。检查被释放包裹的本地候选、合作平台报价、获胜者、支付额和配送员路线。
+3. 在 **Analysis** 中查看目标平台的分配与收益指标。逐分钟折线表示账本增量，累计折线表示其运行总额。
+4. 返回 **Simulation**，选择 **Compare algorithms**，从 `RL-CAPA`、`ImpGTA`、`MRA`、`Greedy`、`RamCOM` 和 `LocalSum` 中至少选择两个算法并重新运行。在 Inspection 中切换 **Displayed algorithm**，在 Analysis 中比较结果，再使用 **Download replay JSON** 保存运行产物。
 
-需要 Python 3.11 或更高版本。在项目根目录运行：
+运行后修改控件不会更新当前回放；点击 **Run simulation** 才会应用新设置。
 
-```powershell
-python -m pip install -e ".[dev]"
-python -m mpcs datasets
-python -m mpcs algorithms
-python -m mpcs mechanisms
-python -m mpcs mixed --scenario examples/mixed-four-platform.json `
-  --output output/first-mixed
-```
+### 真实城市数据
 
-根目录的 `setup.py` 是安装兼容入口；依赖、包发现和 `mpcs` 命令由 `pyproject.toml` 管理。synthetic 场景不需要外部数据。完成后查看 `output/first-mixed/summary.json`、`training/episodes.csv`、`validation/summary.json` 和 `comparison/mixed/metrics.png`。
-
-## 配置四平台混合训练
-
-这条命令让 P1 独自学习 PPO，P2/P3/P4 分别用 RL-CAPA、MRA、IMPGTA 的分池策略选择任务去向。所有平台的本地池统一使用 KM 匹配：
-
-```powershell
-python -m mpcs mixed --dataset synthetic --platforms 4 --learner P1 `
-  --platform-policy P2=rl-capa --platform-policy P3=mra `
-  --platform-policy P4=impgta --local-matcher km `
-  --cross-mechanism regional-fixed `
-  --episodes 20 --seed 11 `
-  --output output/my-mixed --tensorboard
-```
-
-[场景 JSON 示例](examples/mixed-four-platform.json)保存了相同阵容和匹配规则，可通过 `--scenario` 重复运行。命令行的学习者、平台策略、本地匹配器、跨平台机制、平台数、轮数、种子和数据集覆盖 JSON 中的对应值。每个非学习平台都要指定策略。synthetic 支持 `--platforms 2` 到 `--platforms 16`；真实数据集的平台数由预设或完整配置决定。训练每轮仅更新指定 PPO 平台；验证和测试沿用相同阵容，PPO 使用确定性推理。
-
-混合场景有两个算法选择阶段：每个平台的策略对待处理任务选择 `LOCAL`（进入本地池）、`RELEASE`（进入跨平台池）或 `WAIT`（留待后续帧）；环境随后用一个全局选定的 `local_matcher` 匹配各平台本地池，并用一个全局 `cross_mechanism` 处理跨平台池。`local_matcher` 可选 `greedy`（默认，同一辆车一帧可连续接多个任务）或 `km`（每辆车一帧最多接一个新任务，先最大化匹配数，再最小化新增路线距离）。跨平台机制可选 `paper`、`regional-fixed`、`pool-random`，也可注册插件。混合场景中的 baseline 名称只代表其**分池策略**；`run` 单独比较 baseline 时保留其完整参考算法。混合指标代表整场阵容，`profit_by_platform` 给出各平台收益。
-
-## 接入自己的算法
-
-分池算法只需为当前平台每个待处理任务返回 `LOCAL`、`RELEASE` 或 `WAIT`。MPCS 负责本地匹配和跨平台服务。无状态策略可实现一个决策函数；可运行的插件见 [examples/custom_policy.py](examples/custom_policy.py)：
-
-```python
-from mpcs.core.Domain import ParcelAction
-
-def local_first(config, platform_id, observation):
-    return {
-        pickup.parcel_id: ParcelAction.LOCAL
-        for pickup in observation.waiting_pickups
-    }
-
-def register(runner):
-    runner.register_policy("local-first", local_first)
-```
-
-从项目根目录加载插件，并把它放入 P4：
-
-```powershell
-python -m mpcs mixed --scenario examples/mixed-four-platform.json `
-  --plugin examples.custom_policy --platform-policy P4=local-first `
-  --output output/custom-policy
-```
-
-同一个函数策略也可用 `run --methods local-first localsum` 比较。需要保存策略状态时，用 `runner.register_pool_policy(name, factory)` 注册分池策略；跨平台规则用 `runner.register_cross_mechanism(name, factory)` 注册。两处扩展接口及其参数见 [扩展指南](docs/extending.md)。
-
-## 数据集和其他运行方式
-
-内置预设：`synthetic`、`chengdu`、`shanghai`、`shanghai16`。原项目的 Chengdu、Shanghai、New York 数据和地图已复制到本地 `dataset/`，不提交 Git。Chengdu 支持本地 parcel-v2 数据；内置 Shanghai 预设只有测试任务，训练需自定义场景提供器。新克隆仓库可立即运行 synthetic。
-
-成都原始订单可用 [DataUtils 预处理工具](mpcs/utils/DataUtils.py) 转换为仿真所需的 parcel-v2 文件：
+`Chengdu`、`Shanghai` 和 `Shanghai 16` 需要位于 `dataset/` 下的本地处理后包裹文件及对应城市路网。这些文件不纳入 Git。成都处理后文件应放在 `dataset/Didichuxing/Chengdu/parcel_v2/`；[mpcs/arguments.py](mpcs/arguments.py) 定义了预期的路网路径。如果本地已有成都原始数据，可用以下命令生成 parcel-v2 文件：
 
 ```powershell
 python -m mpcs.utils.DataUtils `
@@ -87,44 +66,38 @@ python -m mpcs.utils.DataUtils `
   --seed 20250308
 ```
 
-成都混合训练可用 [按平台分配日期的场景](examples/chengdu-days.json)：
+运行真实城市场景时，为每个平台选择同一城市中互不重复的订单日期。有效订单表统计所选到达时间窗和运营区域内经过解析、去重的订单。取件和送件可分别选择指定采样数或 **All eligible**。`Train`、`Validation` 和 `Test` 均可选；平台日期决定所选划分使用的源文件。真实城市预设的平台数固定，Synthetic 支持 2–16 个平台。
 
-```powershell
-python -m mpcs mixed --scenario examples/chengdu-days.json `
-  --output output/chengdu-days
-```
+## 指标与回放
 
-`platform_days` 对每个平台分别指定 `train`、`validation`、`test`，值可为 `YYYYMMDD` 字符串或日期列表。例如 `"P1": {"train": ["20161105", "20161109"], "validation": "20161111", "test": "20161121"}`。所有平台都需指定三个 split；同一天只能属于一个平台的一个 split，重复分配在读取数据前报错。`MPCSRunner.run_mixed(platform_days=...)` 接受相同映射。示例使用 `dataset/Didichuxing/Chengdu/parcel_v2/` 下的本地文件；新克隆仓库需先准备数据和地图。
-
-```powershell
-python -m mpcs run --dataset chengdu --split test `
-  --methods localsum mra --output output/chengdu
-python -m mpcs pipeline --dataset synthetic --episodes 20 --output output/all-methods
-python -m mpcs sweep --dataset synthetic --methods localsum mra `
-  --seeds 11 29 --max-workers 2 --output output/sweep
-```
-
-`run` 使用内置 baseline 的完整参考实现比较选定算法；`run --local-matcher` 仅在同时提供 `--ppo-checkpoint` 时设置 PPO 的本地匹配器。`pipeline` 训练独立 PPO，并与五种 baseline 在测试集比较；`sweep` 并行比较多个种子；`train-ppo` 只训练独立 PPO，默认按轮次轮换学习平台。交互终端用一个动态 Rich 面板展示数据读取、图与区域构建、任务和配送员队伍准备、环境构建、训练、验证与比较；完成的阶段保留耗时和结果，例如图的 `nodes`、`routing_edges`、任务数与配送员数。物理帧在面板内刷新，非交互终端仅输出阶段完成摘要。`--no-progress` 关闭阶段显示，`--tensorboard` 生成 TensorBoard 事件，JSONL、CSV 和图表仍会输出。
-
-自定义数据格式用插件注册 `config_factory(output_dir)` 和 `scenario_provider(config, split)`。提供器解析数据与地图后调用 `mpcs.data.prepare_scenario`，传入路网、区域、站点、各平台任务和初始配送员。完整实验配置可用 `--config path/to/config.json` 指定；混合阵容 JSON 用 `--scenario` 指定。详见 [扩展指南](docs/extending.md)。
-
-## 项目架构
-
-| 模块 | 职责 |
+| 指标 | MAPS 中的含义 |
 | --- | --- |
-| `mpcs/config.py` | 类型化实验配置、平台数、训练参数和路径 |
-| `mpcs/utils/DataUtils.py`、`mpcs/data/Adapters.py` | 原始订单预处理、内置数据准备和外部场景构建 |
-| `mpcs/core/Domain.py`、`Framework.py` | 观测与动作协议、全局状态、同步物理帧和结算 |
-| `mpcs/core/GraphUtils.py`、`TaskUtils.py`、`LocalMatching.py` 等 | 路网、任务、统一本地匹配、路线及状态推进 |
-| `mpcs/utils/Economics.py`、`Performance.py` | 通用经济计算和运行时间工具 |
-| `mpcs/algorithms/baseline/` | 五种 baseline，各在独立文件中 |
-| `mpcs/algorithms/PPOTraining.py` | 独立与混合 PPO 训练、验证和检查点 |
-| `mpcs/experiments/Runner.py` | 算法注册、同场景比较和并行 sweep |
-| `mpcs/experiments/Workflow.py` | 数据集注册、训练流程和混合阵容 |
-| `mpcs/cli.py` | `mixed`、`pipeline`、`run`、`sweep` 等命令 |
+| **OP** | 到达时间窗截止时目标平台的账本收益，包括本地、跨平台和既有送件业务的收益。 |
+| **AR** | 截止时已分配的目标平台取件包裹数，除以目标平台采样取件包裹总数。 |
+| **BPT** | 目标平台非空批次的平均决策耗时，以毫秒计；包含策略、本地匹配和竞价计算，不包含配送员移动。 |
+| **Profit per minute** | 目标平台账本每分钟的收益增量；增量之和等于展示的 OP。 |
 
-场景准备产生可复用初始状态；各算法在隔离的路网运行时副本中运行。混合训练时，各平台策略只提供分池动作；环境统一处理本地匹配、跨平台匹配、状态推进与结算。独立 baseline 比较保留原算法的完整实现。模块边界见 [架构文档](docs/architecture.md)。
+仿真会继续处理未到取件期限的任务，但 Analysis 在所选到达时间窗结束时截断。若时间窗为 `10:00–11:00`，图表和汇总指标只使用 `11:00` 之前的帧；后续帧仍可在 Inspection 中查看。一次对比只对应一个配对随机种子的场景；若要得出一般性的性能结论，应使用更多种子重复运行。
 
-## 输出和本地开发
+最新运行保存在 `output/maps-demo/latest.json`。**Load last replay** 可在不重新仿真的情况下打开该文件；**Download replay JSON** 可导出当前运行。对比回放共用一份路网和包裹目录，每个算法分别保存决策轨迹和摘要。
 
-混合训练生成 `training/`、`validation/`、`comparison/mixed/` 和根目录 `summary.json`。训练包含 `episodes.jsonl`、`episodes.csv`、`training.png`、`checkpoints/`；比较包含事件日志、逐帧进度、CSV、图表和摘要。`mpcs/utils/DataUtils.py` 纳入 Git；原始数据、转换结果、`tests/`、`output/`、缓存和检查点均被忽略。
+## 代码与研究命令行
+
+| 组件 | 职责 |
+| --- | --- |
+| [maps_demo/app.py](maps_demo/app.py) | Dash 控件、进度、回放与分析。 |
+| [maps_demo/engine.py](maps_demo/engine.py) | 场景构建，以及批次决策、快照、回执和指标的记录。 |
+| [maps_demo/capa.py](maps_demo/capa.py)、[maps_demo/ramcom.py](maps_demo/ramcom.py) | 本地释放与跨平台算法适配。 |
+| [maps_demo/geography.py](maps_demo/geography.py)、[maps_demo/figures.py](maps_demo/figures.py) | 处理后的路网与站点图层、地图回放和图表。 |
+| [mpcs/core/Framework.py](mpcs/core/Framework.py) | 共享时钟、任务分配、移动与结算。 |
+
+研究命令行还提供数据集与算法列表、基线运行、混合平台实验、PPO 训练、完整流程和多种子 sweep。例如：
+
+```powershell
+python -m mpcs datasets
+python -m mpcs algorithms
+python -m mpcs run --dataset synthetic --split test `
+  --methods localsum mra --output output/synthetic-baselines
+```
+
+后端与插件接口见[架构文档](docs/architecture.md)和[扩展指南](docs/extending.md)。
