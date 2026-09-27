@@ -8,6 +8,8 @@ from typing import Any
 
 import plotly.graph_objects as go
 
+from maps_demo.engine import clock_time
+
 PLATFORM_COLORS = (
     "#1677ff", "#f59e0b", "#10b981", "#a855f7",
     "#ef4444", "#06b6d4", "#d97706", "#6366f1",
@@ -24,7 +26,7 @@ def _theme(figure: go.Figure, *, height: int = 310, margin: int = 30) -> go.Figu
     figure.update_layout(
         paper_bgcolor="rgba(0,0,0,0)",
         plot_bgcolor="rgba(0,0,0,0)",
-        font=dict(family="Microsoft YaHei, Segoe UI, sans-serif", color="#334155", size=12),
+        font=dict(family="Segoe UI, sans-serif", color="#334155", size=12),
         margin=dict(l=margin, r=margin, t=25, b=35),
         height=height,
         showlegend=True,
@@ -108,7 +110,7 @@ def map_dynamic_traces(run: dict[str, Any], index: int, focus: str | None,
         traces.append(go.Scatter(
             x=[positions[f"parcel:{pid}"][0] for pid in parcel_ids],
             y=[positions[f"parcel:{pid}"][1] for pid in parcel_ids],
-            mode="markers+text", name=f"{platform} 包裹", legendgroup=platform,
+            mode="markers+text", name=f"{platform} parcels", legendgroup=platform,
             showlegend=bool(parcel_ids),
             text=[visible[pid]["label"] if pid == selected else "" for pid in parcel_ids],
             textposition="top center", textfont=dict(size=11, color="#0f172a"),
@@ -125,7 +127,7 @@ def map_dynamic_traces(run: dict[str, Any], index: int, focus: str | None,
         traces.append(go.Scatter(
             x=[positions[f"vehicle:{vid}"][0] for vid in vehicle_ids],
             y=[positions[f"vehicle:{vid}"][1] for vid in vehicle_ids],
-            mode="markers", name=f"{platform} 车辆", legendgroup=platform, showlegend=False,
+            mode="markers", name=f"{platform} EVs", legendgroup=platform, showlegend=False,
             marker=dict(symbol="square", size=13, color=color_for(platform, platforms),
                         line=dict(color="#0f172a" if platform == focus else "white", width=2)),
             customdata=[["vehicle", vid] for vid in vehicle_ids],
@@ -138,7 +140,7 @@ def map_figure(run: dict[str, Any] | None, index: int, focus: str | None,
                selected: str | None, layers: list[str] | None = None) -> go.Figure:
     figure = go.Figure()
     if not run:
-        figure.add_annotation(text="运行一个场景后，包裹与车辆会出现在这里", showarrow=False,
+        figure.add_annotation(text="Run a scenario to view parcels and EVs", showarrow=False,
                               font=dict(size=16, color="#94a3b8"))
         return _theme(figure, height=525)
     active_layers = set(layers) if layers is not None else {"road", "station"}
@@ -150,7 +152,7 @@ def map_figure(run: dict[str, Any] | None, index: int, focus: str | None,
             road_x.extend((x0, x1, None))
             road_y.extend((y0, y1, None))
         figure.add_trace(go.Scattergl(
-            x=road_x, y=road_y, mode="lines", name="处理后路网",
+            x=road_x, y=road_y, mode="lines", name="Processed roads",
             legendgroup="geography", showlegend=False, hoverinfo="skip",
             line=dict(color="#b8c8d8", width=1.3),
         ))
@@ -164,39 +166,102 @@ def map_figure(run: dict[str, Any] | None, index: int, focus: str | None,
             marker=dict(symbol="diamond", size=station_size, color="#254d88", opacity=0.8,
                         line=dict(color="white", width=0.8)),
             customdata=[[item["id"], item["node"]] for item in stations],
-            hovertemplate="Station %{customdata[0]}<br>路网节点 %{customdata[1]}<extra></extra>",
+            hovertemplate="Station %{customdata[0]}<br>Road node %{customdata[1]}<extra></extra>",
         ))
     for trace in map_dynamic_traces(run, index, focus, selected):
         figure.add_trace(trace)
-    figure.update_xaxes(showgrid=True, gridcolor="#e9eff6", zeroline=False, title="经度 / 显示错位")
-    figure.update_yaxes(showgrid=True, gridcolor="#e9eff6", zeroline=False, title="纬度 / 显示错位",
+    figure.update_xaxes(showgrid=True, gridcolor="#e9eff6", zeroline=False, title="Longitude")
+    figure.update_yaxes(showgrid=True, gridcolor="#e9eff6", zeroline=False, title="Latitude",
                         scaleanchor="x", scaleratio=1)
     figure.update_layout(
         dragmode="pan", uirevision=run["meta"]["dataset"], hovermode="closest",
-        legend=dict(entrywidth=115, entrywidthmode="pixels", y=-0.07),
+        legend=dict(entrywidth=115, entrywidthmode="pixels", y=-0.18),
     )
-    return _theme(figure, height=525, margin=38)
+    figure = _theme(figure, height=535, margin=56)
+    figure.update_layout(margin=dict(l=65, r=25, t=25, b=82), legend=dict(y=-0.2))
+    return figure
+
+
+def _analysis_batches(run: dict[str, Any]) -> list[dict[str, Any]]:
+    end = run["meta"].get("analysis_end_s")
+    return [item for item in run["batches"] if end is None or item["decision_time_s"] < end]
+
+
+def _clock_axis(figure: go.Figure, seconds: list[int], title: str = "Time") -> None:
+    if not seconds:
+        return
+    first = min(seconds) // 60
+    last = max(seconds) // 60
+    stride = max(1, (last - first + 1) // 8)
+    ticks = list(range(first, last + 1, stride))
+    if ticks[-1] != last:
+        ticks.append(last)
+    figure.update_xaxes(title=title, tickmode="array", tickvals=[minute * 60 for minute in ticks],
+                        ticktext=[clock_time(minute * 60) for minute in ticks], gridcolor="#e9eff6")
 
 
 def profit_figure(run: dict[str, Any], focus: str | None) -> go.Figure:
-    batches = run["batches"]
+    batches = _analysis_batches(run)
     figure = go.Figure()
     figure.add_trace(go.Scatter(
-        x=[item["time_s"] for item in batches], y=[item["profit"] for item in batches],
-        mode="lines+markers", name="全平台", line=dict(color="#2563eb", width=3),
+        x=[item["decision_time_s"] for item in batches], y=[item["profit"] for item in batches],
+        mode="lines+markers", name="All platforms", line=dict(color="#2563eb", width=3),
         fill="tozeroy", fillcolor="rgba(37,99,235,0.08)",
-        hovertemplate="t=%{x}s<br>账本合计=%{y:.2f}<extra></extra>",
+        customdata=[clock_time(item["decision_time_s"]) for item in batches],
+        hovertemplate="%{customdata}<br>Ledger total=%{y:.2f}<extra></extra>",
     ))
     if focus:
         figure.add_trace(go.Scatter(
-            x=[item["time_s"] for item in batches],
+            x=[item["decision_time_s"] for item in batches],
             y=[item["profit_by_platform"].get(focus, 0) for item in batches],
             mode="lines+markers", name=focus,
             line=dict(color=color_for(focus, run["meta"]["platforms"]), width=2, dash="dot"),
-            hovertemplate=f"{focus}：%{{y:.2f}}<extra></extra>",
+            customdata=[clock_time(item["decision_time_s"]) for item in batches],
+            hovertemplate=f"{focus} at %{{customdata}}: %{{y:.2f}}<extra></extra>",
         ))
-    figure.update_xaxes(title="模拟时间 / s", gridcolor="#e9eff6")
-    figure.update_yaxes(title="经济账本金额", gridcolor="#e9eff6")
+    _clock_axis(figure, [batches[0]["decision_time_s"],
+                         run["meta"].get("analysis_end_s", batches[-1]["time_s"])])
+    figure.update_xaxes(range=[batches[0]["decision_time_s"],
+                               run["meta"].get("analysis_end_s", batches[-1]["time_s"])])
+    figure.update_yaxes(title="Ledger profit", gridcolor="#e9eff6")
+    return _theme(figure)
+
+
+def minute_profit_figure(run: dict[str, Any], focus: str | None) -> go.Figure:
+    batches = _analysis_batches(run)
+    if not batches:
+        return _theme(go.Figure())
+    start_minute = batches[0]["decision_time_s"] // 60
+    end_minute = (run["meta"].get("analysis_end_s", batches[-1]["time_s"]) - 1) // 60
+    minutes = list(range(start_minute, end_minute + 1))
+    totals = {minute: 0.0 for minute in minutes}
+    platform_totals = {minute: 0.0 for minute in minutes}
+    previous = 0.0
+    previous_focus = 0.0
+    for item in batches:
+        minute = item["decision_time_s"] // 60
+        totals[minute] += item["profit"] - previous
+        previous = item["profit"]
+        current_focus = item["profit_by_platform"].get(focus, 0.0) if focus else 0.0
+        platform_totals[minute] += current_focus - previous_focus
+        previous_focus = current_focus
+    figure = go.Figure()
+    figure.add_trace(go.Bar(
+        x=[minute * 60 for minute in minutes], y=[totals[minute] for minute in minutes],
+        name="All platforms", marker_color="#3b82f6", width=48,
+        customdata=[clock_time(minute * 60) for minute in minutes],
+        hovertemplate="%{customdata}–next minute<br>Profit=%{y:.2f}<extra></extra>",
+    ))
+    if focus:
+        figure.add_trace(go.Scatter(
+            x=[minute * 60 for minute in minutes], y=[platform_totals[minute] for minute in minutes],
+            name=focus, mode="lines+markers", line=dict(color=color_for(focus, run["meta"]["platforms"]), width=2),
+            customdata=[clock_time(minute * 60) for minute in minutes],
+            hovertemplate=f"{focus} at %{{customdata}}: %{{y:.2f}}<extra></extra>",
+        ))
+    _clock_axis(figure, [minute * 60 for minute in minutes], "Minute")
+    figure.update_xaxes(range=[minutes[0] * 60 - 50, minutes[-1] * 60 + 50])
+    figure.update_yaxes(title="Profit in minute", gridcolor="#e9eff6")
     return _theme(figure)
 
 
@@ -209,15 +274,15 @@ def platform_profit_figure(run: dict[str, Any], focus: str | None) -> go.Figure:
         marker=dict(color=[color_for(platform, platforms) for platform in platforms],
                     line=dict(color=["#0f172a" if platform == focus else "white" for platform in platforms], width=2)),
         text=[f"{totals.get(platform, 0):.2f}" for platform in platforms], textposition="outside",
-        hovertemplate="%{x}<br>账本金额=%{y:.2f}<extra></extra>",
+        hovertemplate="%{x}<br>Ledger profit=%{y:.2f}<extra></extra>",
     ))
-    figure.update_yaxes(title="经济账本金额", gridcolor="#e9eff6")
+    figure.update_yaxes(title="Ledger profit", gridcolor="#e9eff6")
     return _theme(figure)
 
 
 def status_figure(run: dict[str, Any]) -> go.Figure:
     summary = run["summary"]
-    labels = ["本地分配", "跨平台分配", "过期", "未分配"]
+    labels = ["Local assignment", "Cross-platform assignment", "Expired", "Unassigned"]
     values = [summary["local_count"], summary["cross_count"], summary["expired"],
               max(0, summary["total"] - summary["assigned"] - summary["expired"])]
     figure = go.Figure(go.Bar(
@@ -227,14 +292,15 @@ def status_figure(run: dict[str, Any]) -> go.Figure:
         text=values, textposition="outside",
         hovertemplate="%{y}: %{x}<extra></extra>",
     ))
-    figure.update_xaxes(title="取件包裹数", gridcolor="#e9eff6")
+    figure.update_xaxes(title="Pickup parcels", gridcolor="#e9eff6")
     figure.update_yaxes(autorange="reversed")
     return _theme(figure)
 
 
 def flow_figure(run: dict[str, Any]) -> go.Figure:
     platforms = run["meta"]["platforms"]
-    final_parcels = run["steps"][-1]["state"]["parcels"]
+    flow_index = run["summary"].get("flow_step_index", len(run["steps"]) - 1)
+    final_parcels = run["steps"][flow_index]["state"]["parcels"]
     counts: Counter[tuple[str, str]] = Counter()
     for parcel_id, state in final_parcels.items():
         serving = state["serving_platform"]
@@ -244,7 +310,7 @@ def flow_figure(run: dict[str, Any]) -> go.Figure:
         arrangement="snap",
         node=dict(
             pad=18, thickness=16,
-            label=[f"来源 {platform}" for platform in platforms] + [f"服务 {platform}" for platform in platforms],
+            label=[f"Origin {platform}" for platform in platforms] + [f"Serving {platform}" for platform in platforms],
             color=[color_for(platform, platforms) for platform in platforms] * 2,
         ),
         link=dict(
@@ -253,7 +319,7 @@ def flow_figure(run: dict[str, Any]) -> go.Figure:
             value=list(counts.values()),
             color=["rgba(249,115,22,0.45)" if origin != serving else "rgba(16,185,129,0.34)"
                    for origin, serving in counts],
-            hovertemplate="%{source.label} → %{target.label}<br>%{value} 件<extra></extra>",
+            hovertemplate="%{source.label} → %{target.label}<br>%{value} parcels<extra></extra>",
         ),
     ))
     return _theme(figure, height=350)

@@ -2,7 +2,8 @@
 
 from math import isclose
 
-from maps_demo.engine import run_demo
+from maps_demo.engine import build_config, run_demo, source_options
+from maps_demo.figures import minute_profit_figure
 
 
 def settings(mechanism="paper"):
@@ -32,7 +33,12 @@ def test_paper_replay_contains_actual_second_price_and_receipts():
     assert summary["assigned"] == summary["local_count"] + summary["cross_count"]
     assert isclose(summary["profit"], sum(summary["profit_by_platform"].values()))
     assert len(run["steps"]) == 5 * len(run["batches"])
-    assert run["steps"][-1]["metrics"]["profit"] == summary["profit"]
+    analyzed = [batch for batch in run["batches"]
+                if batch["decision_time_s"] < run["meta"]["analysis_end_s"]]
+    assert analyzed[-1]["profit"] == summary["profit"]
+    assert run["batches"][-1]["decision_time_s"] >= run["meta"]["analysis_end_s"]
+    assert isclose(sum(minute_profit_figure(run, "P1").data[0].y), summary["profit"])
+    assert set(summary["platform_archive"]) == set(run["meta"]["platforms"])
     geography = run["geography"]
     assert geography["node_count"] == 2
     assert geography["arc_count"] == 2
@@ -68,3 +74,33 @@ def test_fixed_payment_replay_uses_selected_mechanism():
     assert awards
     for parcel, award in awards:
         assert isclose(award["payment"], parcel["fare"] * 0.3)
+
+
+def test_selected_split_dates_and_window_build_a_valid_config():
+    chosen = source_options("chengdu")[10:14]
+    selected = settings()
+    selected.update(
+        dataset="chengdu", split="validation", window_start="07:00",
+        window_end="07:01", deadline_s=60,
+        sources={f"P{index}": day for index, day in enumerate(chosen, start=1)},
+    )
+    config = build_config(selected)
+    assert config.dataset.validation_source_files == tuple(chosen)
+    assert config.simulation.start_time_s == 7 * 3600
+    assert config.simulation.end_time_s == 7 * 3600 + 120
+
+
+def test_real_date_selection_runs_with_selected_split_and_window():
+    chosen = source_options("chengdu")[10:14]
+    selected = settings()
+    selected.update(
+        dataset="chengdu", split="validation", window_start="07:00",
+        window_end="07:01", deadline_s=60,
+        pickups_per_platform=2, dropoffs_per_platform=1,
+        sources={f"P{index}": day for index, day in enumerate(chosen, start=1)},
+    )
+    run = run_demo(selected)
+    assert run["meta"]["split"] == "validation"
+    assert run["summary"]["total"] == len(run["catalog"]) == 8
+    assert run["summary"]["batch"] == 2
+    assert len(run["batches"]) == 4

@@ -2,17 +2,25 @@
 
 from __future__ import annotations
 
+from contextlib import contextmanager
 from dataclasses import replace
+from functools import lru_cache
 from math import ceil, fsum
 from pathlib import Path
 from typing import Any
 
 from maps_demo.geography import prepared_geography
-from mpcs.config import DatasetSplit
+from mpcs.config import DatasetSplit, PlatformSourceFiles
 from mpcs.core.Domain import ParcelAction, ParcelDecision, PlatformActionBatch
 from mpcs.core.Framework import Environment
 from mpcs.core.LocalMatching import build_local_matchers
-from mpcs.data.Adapters import prepare_environment_split
+from mpcs.core.TaskUtils import (
+    ParcelType, _claim_seen_id, _disk_seen_ids, _iter_canonical_orders,
+    _order_in_region_bounds, read_canonical_orders,
+)
+from mpcs.data.Adapters import (
+    _build_order_station_grid, _load_parcel_road_network, prepare_environment_split,
+)
 from mpcs.experiments.Presets import dataset_preset
 from mpcs.experiments.Runner import builtin_algorithms, builtin_cross_mechanisms
 
@@ -20,6 +28,64 @@ STAGES = ("workload", "parcel", "local", "auction", "settlement")
 POLICIES = ("local-first", "release-first", "wait-first", "localsum", "rl-capa", "mra", "impgta", "fed-ltd")
 MECHANISMS = ("paper", "regional-fixed", "pool-random")
 MATCHERS = ("greedy", "km")
+
+
+def clock_time(seconds: int | float) -> str:
+    minutes = int(seconds) // 60
+    return f"{minutes // 60:02d}:{minutes % 60:02d}"
+
+
+def parse_clock(value: str) -> int:
+    try:
+        hour, minute = (int(part) for part in value.split(":"))
+    except (AttributeError, ValueError) as error:
+        raise ValueError("Time must use HH:MM") from error
+    if not (0 <= hour <= 23 and 0 <= minute <= 59):
+        raise ValueError("Time must be within one day")
+    return hour * 3600 + minute * 60
+
+
+def source_options(dataset: str) -> list[str]:
+    if dataset == "synthetic":
+        return []
+    preset = dataset_preset(dataset, output_root=Path("output/maps-demo"))
+    return sorted(path.name for path in preset.paths.dataset_root.glob("order_*"))
+
+
+def _selected_sources(config: Any, split: DatasetSplit, selected: dict[str, str]) -> Any:
+    if len(set(selected.values())) != len(selected):
+        raise ValueError("Each platform must select a different order date")
+    available = set(source_options(config.dataset.name))
+    if set(selected) != set(config.platform_ids) or not set(selected.values()) <= available:
+        raise ValueError("Select one available order date for every platform")
+    used = set(selected.values())
+    alternatives = [source for source in source_options(config.dataset.name) if source not in used]
+    roles = {}
+    for role in DatasetSplit:
+        if role is split:
+            roles[role] = tuple(selected[platform] for platform in config.platform_ids)
+        elif config.dataset.name == "chengdu":
+            original = config.dataset.source_files_for(role)
+            free = [source for source in original if source not in used]
+            free += [source for source in alternatives if source not in free]
+            roles[role] = tuple(free[:len(config.platform_ids)])
+            used.update(roles[role])
+            alternatives = [source for source in alternatives if source not in used]
+        else:
+            roles[role] = tuple(f"unused-{role.value}-{index}" for index in range(1, len(config.platform_ids) + 1))
+    mappings = tuple(PlatformSourceFiles(
+        platform_id=platform,
+        train_source_files=(roles[DatasetSplit.TRAIN][index],),
+        validation_source_files=(roles[DatasetSplit.VALIDATION][index],),
+        test_source_files=(roles[DatasetSplit.TEST][index],),
+    ) for index, platform in enumerate(config.platform_ids))
+    return replace(
+        config.dataset,
+        train_source_files=roles[DatasetSplit.TRAIN],
+        validation_source_files=roles[DatasetSplit.VALIDATION],
+        test_source_files=roles[DatasetSplit.TEST],
+        platform_source_files=mappings,
+    )
 
 
 def build_config(settings: dict[str, Any]):
@@ -32,12 +98,41 @@ def build_config(settings: dict[str, Any]):
         platform_count=platforms if dataset == "synthetic" else None,
     )
     step_size = int(settings["step_size_s"])
+    split = DatasetSplit(settings.get("split", "test"))
+    start = parse_clock(settings["window_start"]) if "window_start" in settings else config.dataset.arrival_window_start_s
+    end = parse_clock(settings["window_end"]) if "window_end" in settings else config.dataset.arrival_window_end_s
+    if start >= end:
+        raise ValueError("Arrival window end must follow its start")
+    deadline = int(settings.get("deadline_s", config.parcel.pickup_deadline_min_s))
+    dataset_config = config.dataset
+    if dataset != "synthetic" and settings.get("sources"):
+        dataset_config = _selected_sources(config, split, settings["sources"])
+    pickups = settings.get("pickups_per_platform", 3)
+    dropoffs = settings.get("dropoffs_per_platform", 1)
+    if pickups == "all" or dropoffs == "all":
+        counts = available_orders(settings)
+        if pickups == "all":
+            pickup_counts = tuple(counts[p]["pickup"] for p in config.platform_ids)
+            pickups = 0
+        else:
+            pickup_counts = None
+        if dropoffs == "all":
+            dropoff_counts = tuple(counts[p]["dropoff"] for p in config.platform_ids)
+            dropoffs = 0
+        else:
+            dropoff_counts = None
+    else:
+        pickup_counts = dropoff_counts = None
     config = replace(
         config,
         dataset=replace(
-            config.dataset,
-            pickup_count_per_platform=int(settings["pickups_per_platform"]),
-            dropoff_count_per_platform=int(settings["dropoffs_per_platform"]),
+            dataset_config,
+            pickup_count_per_platform=int(pickups),
+            dropoff_count_per_platform=int(dropoffs),
+            pickup_counts_per_platform=pickup_counts,
+            dropoff_counts_per_platform=dropoff_counts,
+            arrival_window_start_s=start,
+            arrival_window_end_s=end,
         ),
         ev=replace(
             config.ev,
@@ -46,24 +141,82 @@ def build_config(settings: dict[str, Any]):
         ),
         parcel=replace(
             config.parcel,
-            pickup_deadline_min_s=int(settings.get("deadline_s", config.parcel.pickup_deadline_min_s)),
-            pickup_deadline_max_s=int(settings.get("deadline_s", config.parcel.pickup_deadline_max_s)),
+            pickup_deadline_min_s=deadline,
+            pickup_deadline_max_s=deadline,
         ),
         master_seed=int(settings["seed"]),
         auction=replace(
             config.auction,
             sharing_rate=float(settings.get("sharing_rate", config.auction.sharing_rate)),
         ),
-        simulation=replace(config.simulation, step_size_s=step_size, cpu_workers=1),
+        simulation=replace(config.simulation, start_time_s=start, end_time_s=end + deadline,
+                           step_size_s=step_size, cpu_workers=1),
         training=replace(
             config.training,
-            max_steps_per_episode=ceil(
-                (config.simulation.end_time_s - config.simulation.start_time_s) / step_size
-            ),
+            max_steps_per_episode=ceil((end + deadline - start) / step_size),
         ),
     )
     config.validate()
     return config
+
+
+@lru_cache(maxsize=3)
+def _count_region(dataset: str):
+    config = dataset_preset(dataset, output_root=Path("output/maps-demo"))
+    road, _ = _load_parcel_road_network(config, road_artifact_dir=None)
+    try:
+        reference = read_canonical_orders(
+            (config.paths.dataset_root / config.stations.reference_source_file,),
+            replace(config.dataset, arrival_window_start_s=0, arrival_window_end_s=86400),
+        )
+        points = tuple(point for order in reference for point in (order.pickup_location, order.dropoff_location))
+        region, _, _ = _build_order_station_grid(config, road, points)
+        return region
+    finally:
+        road.close()
+
+
+@lru_cache(maxsize=16)
+def _available_real(dataset: str, split_name: str, names: tuple[str, ...], start: int, end: int):
+    config = dataset_preset(dataset, output_root=Path("output/maps-demo"))
+    region = _count_region(dataset)
+    window = replace(config.dataset, arrival_window_start_s=start, arrival_window_end_s=end)
+    result = {}
+    with _disk_seen_ids() as seen:
+        for index, source in enumerate(names, start=1):
+            counts = {"pickup": 0, "dropoff": 0}
+            for order in _iter_canonical_orders((config.paths.dataset_root / source,), window):
+                if not _claim_seen_id(seen, "semantic_ids", order.semantic_order_id):
+                    continue
+                if not _claim_seen_id(seen, "canonical_ids", order.canonical_order_id):
+                    continue
+                if not _order_in_region_bounds(order, region):
+                    continue
+                for parcel_type in ParcelType:
+                    if order.parcel_type is None or order.parcel_type is parcel_type:
+                        counts[parcel_type.value] += 1
+            result[f"P{index}"] = counts
+    return result
+
+
+def available_orders(settings: dict[str, Any]) -> dict[str, dict[str, int]]:
+    dataset = settings["dataset"]
+    platforms = [f"P{i}" for i in range(1, int(settings["platforms"]) + 1)]
+    if dataset == "synthetic":
+        return {p: {"pickup": int(settings["pickups_per_platform"]),
+                    "dropoff": int(settings["dropoffs_per_platform"])} for p in platforms}
+    config = dataset_preset(dataset, output_root=Path("output/maps-demo"))
+    split = DatasetSplit(settings.get("split", "test"))
+    sources = settings.get("sources") or {
+        p: config.dataset.source_files_for_platform(p, split)[0] for p in platforms
+    }
+    _selected_sources(config, split, sources)
+    names = tuple(sources[p] for p in platforms)
+    start = parse_clock(settings["window_start"])
+    end = parse_clock(settings["window_end"])
+    if start >= end:
+        raise ValueError("Arrival window end must follow its start")
+    return _available_real(dataset, split.value, names, start, end)
 
 
 def _point(point: Any) -> list[float]:
@@ -250,8 +403,27 @@ def _simple_action(name: str) -> ParcelAction:
     }[name]
 
 
-def run_demo(settings: dict[str, Any]) -> dict[str, Any]:
-    """Compute one complete held-out episode and serialize its actual process."""
+class _DemoStageReporter:
+    def __init__(self, notify):
+        self.notify = notify
+        self.completed = 0
+
+    @contextmanager
+    def stage(self, stage_id: str, **_details):
+        labels = {
+            "graph_load": "Loading road network", "region_build": "Building station grid",
+            "station_build": "Preparing stations", "dataset_parse": "Sampling orders",
+            "platform_partition": "Building parcels", "fleet_init": "Initializing vehicles",
+        }
+        self.notify(min(58, self.completed * 10), labels.get(stage_id, stage_id))
+        facts = {}
+        yield facts
+        self.completed += 1
+        self.notify(min(60, self.completed * 10), labels.get(stage_id, stage_id) + " complete")
+
+
+def run_demo(settings: dict[str, Any], progress=None) -> dict[str, Any]:
+    """Compute one selected episode and serialize its actual process."""
     if settings["mechanism"] not in MECHANISMS or settings["matcher"] not in MATCHERS:
         raise ValueError("Unknown matching or auction mechanism")
     config = build_config(settings)
@@ -259,7 +431,14 @@ def run_demo(settings: dict[str, Any]) -> dict[str, Any]:
     if any(policy not in POLICIES for policy in policies.values()):
         raise ValueError("Unknown platform policy")
     seed = int(settings["seed"])
-    prepared = prepare_environment_split(config, DatasetSplit.TEST)
+    split = DatasetSplit(settings.get("split", "test"))
+    if progress:
+        progress(0, "Preparing scenario")
+    prepared = prepare_environment_split(
+        config, split, stage_reporter=_DemoStageReporter(progress) if progress else None,
+        station_reference_source_file=(config.stations.reference_source_file
+                                       if settings["dataset"] != "synthetic" else None),
+    )
     environment = None
     try:
         catalog = _catalog(prepared)
@@ -285,6 +464,7 @@ def run_demo(settings: dict[str, Any]) -> dict[str, Any]:
         kwargs["auctioneer"] = _RecordingAuctioneer(kwargs["auctioneer"], trace)
         environment = Environment.from_prepared(config=config, prepared=prepared, **kwargs)
         observations = environment.reset(seed)
+        frame_total = ceil((config.simulation.end_time_s - config.simulation.start_time_s) / config.simulation.step_size_s)
         steps: list[dict[str, Any]] = []
         batches: list[dict[str, Any]] = []
         batch = 0
@@ -317,7 +497,7 @@ def run_demo(settings: dict[str, Any]) -> dict[str, Any]:
             result = environment.step(actions)
             after = _world_snapshot(environment)
             metrics = environment.metrics
-            progress = environment.pickup_progress_snapshot
+            pickup_progress = environment.pickup_progress_snapshot
             details = _trace_for_frame(trace, result)
             for platform_result in result.platform_results.values():
                 for receipt in platform_result.serving_assignment_receipts:
@@ -331,20 +511,43 @@ def run_demo(settings: dict[str, Any]) -> dict[str, Any]:
                                 "payment": float(receipt.cooperation_fee_amount),
                             }
             totals = {key: float(value) for key, value in metrics.ledger_totals_by_platform.items()}
+            breakdowns = {p: value.to_dict() for p, value in metrics.platform_profit_breakdowns.items()}
+            platform_archive = {}
+            for platform in config.platform_ids:
+                own = [state for pid, state in after["parcels"].items()
+                       if catalog[pid]["origin"] == platform]
+                matched = [state for state in own if state["serving_platform"]]
+                ledger = breakdowns[platform]
+                platform_archive[platform] = {
+                    "pending": sum(state["status"] == "waiting" for state in own),
+                    "local_processed": sum(value == "LOCAL" for pid, value in decisions.items()
+                                           if catalog[pid]["origin"] == platform),
+                    "cross_processed": sum(value == "RELEASE" for pid, value in decisions.items()
+                                           if catalog[pid]["origin"] == platform),
+                    "matched": len(matched),
+                    "local_matched": sum(state["serving_platform"] == platform for state in matched),
+                    "cross_matched": sum(state["serving_platform"] != platform for state in matched),
+                    "profit": totals[platform],
+                    "local_profit": ledger["local_utility_amount"],
+                    "cross_profit": ledger["origin_cross_utility_amount"] + ledger["serving_cross_utility_amount"],
+                    "dropoff_profit": ledger["dropoff_operational_utility_amount"],
+                }
             record = {
                 "batch": batch,
                 "decision_time_s": decision_time,
                 "time_s": environment.current_time_s,
-                "waiting": progress.waiting,
-                "assigned": progress.assigned,
-                "expired": progress.expired,
-                "total": progress.total,
+                "waiting": pickup_progress.waiting,
+                "assigned": pickup_progress.assigned,
+                "expired": pickup_progress.expired,
+                "total": pickup_progress.total,
                 "collected": metrics.pickup_collected_count,
                 "unloaded": metrics.pickup_unloaded_count,
                 "local_count": metrics.local_assignment_count,
                 "cross_count": metrics.cross_assignment_count,
                 "profit": fsum(totals.values()),
                 "profit_by_platform": totals,
+                "platform_archive": platform_archive,
+                "ledger_breakdown_by_platform": breakdowns,
             }
             batches.append(record)
             for stage in STAGES:
@@ -358,13 +561,25 @@ def run_demo(settings: dict[str, Any]) -> dict[str, Any]:
                         **record, "assigned": 0, "expired": 0, "collected": 0,
                         "unloaded": 0, "local_count": 0, "cross_count": 0,
                         "profit": 0.0, "profit_by_platform": {p: 0.0 for p in config.platform_ids},
+                            "platform_archive": {p: {
+                                "local_profit": 0.0, "cross_profit": 0.0, "dropoff_profit": 0.0,
+                            } for p in config.platform_ids},
                     }),
                 })
             observations = result.next_platform_observations
-        final = batches[-1]
+            if progress:
+                progress(60 + 35 * min(batch, frame_total) / frame_total,
+                         f"Simulating frame {batch} / {frame_total}")
+        analysis_batches = [item for item in batches if item["decision_time_s"] < config.dataset.arrival_window_end_s]
+        final = analysis_batches[-1]
+        analysis_step = next(step for step in reversed(steps)
+                             if step["stage"] == "settlement" and step["batch"] == final["batch"])
+        if progress:
+            progress(98, "Preparing replay")
         return {
             "meta": {
-                "dataset": settings["dataset"], "split": "test", "seed": seed,
+                "dataset": settings["dataset"], "split": split.value, "seed": seed,
+                "analysis_end_s": config.dataset.arrival_window_end_s,
                 "platforms": list(config.platform_ids), "policies": policies,
                 "matcher": settings["matcher"], "mechanism": settings["mechanism"],
                 "settings": settings, "source": "computed",
@@ -373,10 +588,8 @@ def run_demo(settings: dict[str, Any]) -> dict[str, Any]:
             "summary": {
                 **final,
                 "assignment_rate": final["assigned"] / final["total"] if final["total"] else 0.0,
-                "ledger_breakdown": {
-                    platform: breakdown.to_dict()
-                    for platform, breakdown in metrics.platform_profit_breakdowns.items()
-                },
+                "ledger_breakdown": final["ledger_breakdown_by_platform"],
+                "flow_step_index": analysis_step["index"],
             },
         }
     finally:

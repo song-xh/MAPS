@@ -246,6 +246,7 @@ class ParcelV2PreparationAdapter:
         *,
         road_artifact_dir: Path | None,
         stage_reporter: object | None,
+        station_reference_source_file: str | None = None,
     ) -> PreparedEnvironment:
         road_network: RoadNetwork | None = None
         try:
@@ -259,7 +260,11 @@ class ParcelV2PreparationAdapter:
                 reference_orders = read_canonical_orders(
                     tuple(
                         config.paths.dataset_root / source_id
-                        for source_id in config.dataset.source_files_for(split)
+                        for source_id in (
+                            (station_reference_source_file,)
+                            if station_reference_source_file is not None
+                            else config.dataset.source_files_for(split)
+                        )
                     ),
                     replace(
                         config.dataset,
@@ -654,6 +659,7 @@ def prepare_environment_split(
     canonical_context: object | None = None,
     canonical_context_root: Path | None = None,
     stage_reporter: object | None = None,
+    station_reference_source_file: str | None = None,
 ) -> PreparedEnvironment:
     """Prepare one selected split without opening the other source roles.
 
@@ -692,14 +698,16 @@ def prepare_environment_split(
             ),
             stage_reporter=stage_reporter,
         )
-    return preparation_adapter(config.dataset.adapter).prepare_split(
-        config,
-        split,
-        road_artifact_dir=(
-            None if road_artifact_dir is None else Path(road_artifact_dir)
-        ),
+    adapter = preparation_adapter(config.dataset.adapter)
+    options = dict(
+        road_artifact_dir=None if road_artifact_dir is None else Path(road_artifact_dir),
         stage_reporter=stage_reporter,
     )
+    if station_reference_source_file is not None:
+        if not isinstance(adapter, ParcelV2PreparationAdapter):
+            raise ValueError("station reference override requires parcel_v2")
+        options["station_reference_source_file"] = station_reference_source_file
+    return adapter.prepare_split(config, split, **options)
 
 
 def _prepare_pools(

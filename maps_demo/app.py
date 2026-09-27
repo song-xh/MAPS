@@ -4,17 +4,21 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from threading import Thread
 from typing import Any
 
 from dash import ALL, Dash, Input, Output, Patch, State, ctx, dcc, html, no_update
 
-from maps_demo.engine import POLICIES, STAGES, run_demo
+from maps_demo.engine import (
+    POLICIES, STAGES, available_orders, clock_time, parse_clock, run_demo, source_options,
+)
 from maps_demo.figures import (
     color_for,
     flow_figure,
     map_dynamic_traces,
     map_figure,
     map_static_trace_count,
+    minute_profit_figure,
     platform_profit_figure,
     profit_figure,
     status_figure,
@@ -23,6 +27,7 @@ from maps_demo.figures import (
 REPLAY_PATH = Path("output/maps-demo/latest.json")
 _ACTIVE_RUN: dict[str, Any] | None = None
 _ACTIVE_RUN_ID = 0
+_RUN_JOB: dict[str, Any] | None = None
 
 
 def _cache_run(run: dict[str, Any]) -> dict[str, int]:
@@ -37,27 +42,27 @@ def _get_run(reference: dict[str, int] | None) -> dict[str, Any] | None:
 
 
 STAGE_LABELS = {
-    "workload": ("01", "Workload", "任务到达"),
-    "parcel": ("02", "Parcel", "平台分池动作"),
-    "local": ("03", "Local decision", "本地可行匹配"),
-    "auction": ("04", "Auction", "跨平台竞价"),
-    "settlement": ("05", "Settlement", "执行与结算"),
+    "workload": ("01", "Workload", "Order arrivals"),
+    "parcel": ("02", "Parcel", "Pool decisions"),
+    "local": ("03", "Local decision", "Feasible matches"),
+    "auction": ("04", "Auction", "Cross-platform bids"),
+    "settlement": ("05", "Settlement", "Assignments & ledger"),
 }
 POLICY_LABELS = {
-    "release-first": "全部共享 · 演示规则",
-    "local-first": "全部本地 · 演示规则",
-    "wait-first": "全部等待 · 演示规则",
+    "release-first": "Release all · demo rule",
+    "local-first": "Local all · demo rule",
+    "wait-first": "Wait all · demo rule",
     "localsum": "LocalSum",
-    "rl-capa": "RL-CAPA 基线",
+    "rl-capa": "RL-CAPA baseline",
     "mra": "MRA",
     "impgta": "IMPGTA",
     "fed-ltd": "Fed-LTD",
 }
 STATUS_LABELS = {
-    "future": "尚未到达", "waiting": "待处理", "public_this_step": "本帧共享",
-    "cross_pool": "跨平台池", "local_assigned": "本地已分配",
-    "cross_assigned": "跨平台已分配", "collected": "已取件",
-    "unloaded": "已卸货", "expired": "已过期",
+    "future": "Not arrived", "waiting": "Pending", "public_this_step": "Released this frame",
+    "cross_pool": "Cross-platform pool", "local_assigned": "Locally assigned",
+    "cross_assigned": "Cross-platform assigned", "collected": "Collected",
+    "unloaded": "Unloaded", "expired": "Expired",
 }
 
 
@@ -106,13 +111,19 @@ def _table(headers: list[str], rows: list[list[Any]]) -> html.Table:
     ])
 
 
-def _settings(dataset: str, platforms: int, seed: int, pickups: int, dropoffs: int,
+def _settings(dataset: str, platforms: int, seed: int, pickup_mode: str, pickups: int,
+              dropoff_mode: str, dropoffs: int, split: str, window_start: str, window_end: str,
+              source_ids: list[dict], source_values: list[str],
               vehicles: int, step_size: int, matcher: str, mechanism: str,
               radius: float, deadline: int, sharing: float,
               policy_ids: list[dict], policy_values: list[str]) -> dict[str, Any]:
     return {
         "dataset": dataset, "platforms": int(platforms), "seed": int(seed),
-        "pickups_per_platform": int(pickups), "dropoffs_per_platform": int(dropoffs),
+        "pickups_per_platform": "all" if pickup_mode == "all" else int(pickups),
+        "dropoffs_per_platform": "all" if dropoff_mode == "all" else int(dropoffs),
+        "split": split, "window_start": window_start, "window_end": window_end,
+        "sources": {item["index"]: value for item, value in zip(source_ids, source_values, strict=True)}
+                   if dataset != "synthetic" else {},
         "vehicles_per_platform": int(vehicles), "step_size_s": int(step_size),
         "matcher": matcher, "mechanism": mechanism,
         "service_radius_km": float(radius), "deadline_s": int(deadline),
@@ -125,58 +136,74 @@ def _simulation_page() -> html.Div:
     return html.Div(id="simulation-page", className="page", children=[
         html.Div(className="page-intro", children=[
             html.Div([html.Span("01 / SIMULATION", className="eyebrow"),
-                      html.H2("配置并运行一场合作分配"),
-                      html.P("调整 CLI 与 config 中影响演示的设置。一次运行生成真实过程回放与结果产物。")]),
+                      html.H2("Configure a cooperative assignment run"),
+                      html.P("Set the workload, platform sources and MPCS mechanisms. Each run produces a process replay and analysis.")]),
             html.Div(id="dirty-note", className="dirty-note"),
         ]),
         html.Div(className="simulation-grid", children=[
-            _card("场景与工作量", html.Div(className="field-grid", children=[
-                _field("数据预设", _select("dataset", [
-                    ("Synthetic · 无外部数据", "synthetic"), ("Chengdu · 本地数据", "chengdu"),
-                    ("Shanghai · 本地数据", "shanghai"), ("Shanghai 16 · 本地数据", "shanghai16"),
-                ], "synthetic")),
-                _field("平台数量", _select("platforms", [(str(n), n) for n in range(2, 17)], 4),
-                       "Synthetic 可调整；真实数据按预设固定"),
-                _field("目标平台", _select("focus-platform", [(f"P{i}", f"P{i}") for i in range(1, 5)], "P1"),
-                       "仅影响高亮，不改变仿真"),
-                _field("随机种子", _number("seed", 11, minimum=0, maximum=2147483647)),
-                _field("每平台取件", _number("pickups", 3, minimum=1, maximum=30), "测试集抽样规模"),
-                _field("每平台既有送件", _number("dropoffs", 1, minimum=0, maximum=20), "测试集抽样规模"),
-                _field("每平台车辆", _number("vehicles", 2, minimum=1, maximum=16)),
-                _field("物理帧间隔 / 秒", _select("step-size", [(str(x), x) for x in (10, 15, 20, 30, 45, 60)], 30)),
-            ]), "A / INPUT"),
-            _card("决策与机制", html.Div(children=[
+            _card("Scenario & workload", html.Div(children=[
                 html.Div(className="field-grid", children=[
-                    _field("本地匹配", _select("matcher", [("Greedy", "greedy"), ("KM · 最大匹配", "km")], "km")),
-                    _field("跨平台机制", _select("mechanism", [
-                        ("Paper · 反向 Vickrey", "paper"),
-                        ("Regional fixed · 固定支付", "regional-fixed"),
-                        ("Pool random · 随机单候选", "pool-random"),
+                _field("Dataset", _select("dataset", [
+                    ("Synthetic", "synthetic"), ("Chengdu", "chengdu"),
+                    ("Shanghai", "shanghai"), ("Shanghai 16", "shanghai16"),
+                ], "synthetic")),
+                _field("Data split", _select("split", [(name.title(), name) for name in ("train", "validation", "test")], "test")),
+                _field("Platforms", _select("platforms", [(str(n), n) for n in range(2, 17)], 4),
+                       "Synthetic is adjustable; real datasets use a fixed platform count."),
+                _field("Focus platform", _select("focus-platform", [(f"P{i}", f"P{i}") for i in range(1, 5)], "P1"),
+                       "Changes highlighting only."),
+                _field("Random seed", _number("seed", 11, minimum=0, maximum=2147483647)),
+                _field("Arrival window start", dcc.Input(id="window-start", type="time", value="00:00", className="input")),
+                _field("Arrival window end", dcc.Input(id="window-end", type="time", value="00:01", className="input")),
+                _field("Pickup sample", _select("pickup-mode", [("Count", "count"), ("All eligible", "all")], "count")),
+                _field("Pickups per platform", _number("pickups", 3, minimum=0)),
+                _field("Dropoff sample", _select("dropoff-mode", [("Count", "count"), ("All eligible", "all")], "count")),
+                _field("Dropoffs per platform", _number("dropoffs", 1, minimum=0)),
+                _field("Vehicles per platform", _number("vehicles", 2, minimum=1)),
+                _field("Frame interval / s", _select("step-size", [(str(x), x) for x in (10, 15, 20, 30, 60)], 30)),
+                ]),
+                html.Div(className="section-divider"),
+                html.Div(className="inline-heading", children=[html.H4("Platform order dates"),
+                    html.Small("Distinct dates on the same city road network")]),
+                html.Div(id="source-controls", className="policy-grid"),
+                html.Div(id="availability", className="availability"),
+            ]), "A / INPUT"),
+            _card("Decisions & mechanisms", html.Div(children=[
+                html.Div(className="field-grid", children=[
+                    _field("Local matcher", _select("matcher", [("Greedy", "greedy"), ("KM · maximum matching", "km")], "km")),
+                    _field("Cross-platform mechanism", _select("mechanism", [
+                        ("Paper · reverse Vickrey", "paper"),
+                        ("Regional fixed payment", "regional-fixed"),
+                        ("Pool random candidate", "pool-random"),
                     ], "paper")),
                 ]),
                 html.Div(className="section-divider"),
-                html.Div(className="inline-heading", children=[html.H4("各平台分池策略"),
-                                                          html.Small("先决定 LOCAL / RELEASE / WAIT")]),
+                html.Div(className="inline-heading", children=[html.H4("Platform pool policies"),
+                                                          html.Small("LOCAL / RELEASE / WAIT")]),
                 html.Div(id="policy-controls", className="policy-grid"),
                 html.Details(className="advanced", children=[
-                    html.Summary("更多仿真参数"),
+                    html.Summary("More simulation parameters"),
                     html.Div(className="field-grid", children=[
-                        _field("车辆服务半径 / km", _number("radius", 10.0, minimum=0.1, maximum=100, step=0.1)),
-                        _field("取件期限 / 秒", _number("deadline", 60, minimum=1, maximum=1800)),
-                        _field("跨平台分享比例", _number("sharing", 0.3, minimum=0.01, maximum=1, step=0.01)),
+                        _field("Vehicle service radius / km", _number("radius", 10.0, minimum=0.1, maximum=100, step=0.1)),
+                        _field("Pickup deadline / s", _number("deadline", 60, minimum=1, maximum=1800)),
+                        _field("Cooperation sharing rate", _number("sharing", 0.3, minimum=0.01, maximum=1, step=0.01)),
                     ]),
                 ]),
             ]), "B / MECHANISM"),
         ]),
         html.Div(className="run-bar", children=[
             html.Div([html.Span("RUN A SCENARIO", className="eyebrow"),
-                      html.P("同一物理帧收集全部平台动作，然后匹配、竞价与结算。")]),
+                      html.P("Collect all platform actions per frame, then match, auction and settle.")]),
             html.Div(className="button-row", children=[
-                html.Button("运行仿真 →", id="run-button", className="button primary"),
-                html.Button("加载上次回放", id="load-button", className="button secondary"),
+                html.Button("Run simulation →", id="run-button", className="button primary"),
+                html.Button("Load last replay", id="load-button", className="button secondary"),
             ]),
         ]),
-        dcc.Loading(html.Div(id="run-status", className="run-status"), type="circle"),
+        dcc.Interval(id="run-poll", interval=400, disabled=True),
+        html.Div(className="run-progress-wrap", children=[
+            html.Progress(id="run-progress", value=0, max=100),
+            html.Div(id="run-status", className="run-status"),
+        ]),
         html.Div(id="simulation-result"),
     ])
 
@@ -185,24 +212,24 @@ def _inspection_page() -> html.Div:
     return html.Div(id="inspection-page", className="page", style={"display": "none"}, children=[
         html.Div(className="page-intro", children=[
             html.Div([html.Span("02 / INSPECTION", className="eyebrow"),
-                      html.H2("沿一件包裹追踪完整决策"),
-                      html.P("点地图包裹或从列表选择；横向切换工作量、分池、本地匹配、竞价和结算。")]),
+                      html.H2("Inspect every decision"),
+                      html.P("Select a parcel or platform, then step through workload, pooling, local matching, auction and settlement.")]),
             html.Div(id="inspection-source", className="source-pill"),
         ]),
         html.Div(id="current-metrics", className="metric-grid"),
         html.Div(id="stage-strip", className="stage-strip"),
         html.Div(className="inspection-grid", children=[
-            _card("路网与分配", html.Div(children=[
+            _card("Road network & assignments", html.Div(children=[
                 html.Div(className="map-toolbar", children=[
                     dcc.Checklist(
                         id="map-layers",
                         options=[
-                            {"label": "处理后路网", "value": "road"},
+                            {"label": "Processed roads", "value": "road"},
                             {"label": "Station", "value": "station"},
                         ],
                         value=["road", "station"], inline=True, className="map-layers",
                     ),
-                    html.Span("○ 包裹   ■ 车辆   ─ 本地匹配   ··· 跨平台匹配", className="map-legend-hint"),
+                    html.Span("○ Parcel   ■ EV   ─ Local match   ··· Cross-platform match", className="map-legend-hint"),
                 ]),
                 dcc.Graph(id="map", figure=map_figure(None, 0, None, None), config={
                     "scrollZoom": True, "displayModeBar": True, "displaylogo": False,
@@ -210,18 +237,20 @@ def _inspection_page() -> html.Div:
                 }),
                 html.Div(id="map-caption", className="figure-caption"),
             ]), "SPATIAL VIEW", "map-card"),
-            _card("包裹决策档案", html.Div(children=[
-                _field("选择包裹", dcc.Dropdown(id="parcel-picker", options=[], placeholder="先运行场景", className="select")),
+            _card("Parcel decision archive", html.Div(children=[
+                _field("Select parcel", dcc.Dropdown(id="parcel-picker", options=[], placeholder="Run a scenario first", className="select")),
                 html.Div(id="parcel-details", className="parcel-details"),
             ]), "DECISION TRACE", "details-card"),
         ]),
-        _card("过程时间轴", html.Div(children=[
+        _card("Platform decision archive", html.Div(id="platform-details", className="platform-details"),
+              "PLATFORM TRACE", "platform-card"),
+        _card("Process timeline", html.Div(children=[
             html.Div(className="playback-row", children=[
                 html.Div(className="button-row", children=[
-                    html.Button("▶ 播放", id="play-button", className="button primary small"),
+                    html.Button("▶ Play", id="play-button", className="button primary small"),
                     html.Button("←", id="prev-button", className="button secondary small"),
                     html.Button("→", id="next-button", className="button secondary small"),
-                    html.Button("重置", id="reset-button", className="button secondary small"),
+                    html.Button("Reset", id="reset-button", className="button secondary small"),
                 ]),
                 html.Div(id="step-label", className="step-label"),
                 _select("speed", [("0.5×", 0.5), ("1×", 1), ("2×", 2)], 1),
@@ -236,9 +265,9 @@ def _analysis_page() -> html.Div:
     return html.Div(id="analysis-page", className="page", style={"display": "none"}, children=[
         html.Div(className="page-intro", children=[
             html.Div([html.Span("03 / ANALYSIS", className="eyebrow"),
-                      html.H2("结果产物与平台间流向"),
-                      html.P("数字来自同次仿真的经济账本和生命周期；分配、取件与卸货分别统计。")]),
-            html.Button("下载本次回放 JSON", id="download-button", className="button secondary"),
+                      html.H2("Outcomes & platform flows"),
+                      html.P("Analysis ends at the selected arrival window boundary; the replay continues through outstanding deadlines.")]),
+            html.Button("Download replay JSON", id="download-button", className="button secondary"),
         ]),
         html.Div(id="final-metrics", className="metric-grid"),
         html.Div(id="analysis-content"),
@@ -269,7 +298,7 @@ app.layout = html.Div(className="app-shell", children=[
         ]),
         _simulation_page(), _inspection_page(), _analysis_page(),
     ]),
-    html.Footer("MAPS · 本地计算与回放 / 当前 MPCS 机制", className="footer"),
+    html.Footer("MAPS · Local computation and replay / current MPCS mechanism", className="footer"),
 ])
 
 
@@ -284,16 +313,83 @@ def show_section(section: str):
 
 @app.callback(
     Output("platforms", "value"), Output("platforms", "disabled"),
-    Output("pickups", "disabled"), Output("dropoffs", "disabled"),
+    Output("pickup-mode", "disabled"), Output("dropoff-mode", "disabled"),
     Output("vehicles", "disabled"), Output("radius", "disabled"),
     Output("deadline", "disabled"), Output("vehicles", "value"),
-    Output("deadline", "value"), Input("dataset", "value"), State("platforms", "value"),
+    Output("deadline", "value"), Output("window-start", "value"),
+    Output("window-end", "value"), Output("pickup-mode", "value"),
+    Output("dropoff-mode", "value"),
+    Input("dataset", "value"), State("platforms", "value"),
 )
 def dataset_controls(dataset: str, count: int):
     fixed = {"chengdu": 4, "shanghai": 4, "shanghai16": 16}
     synthetic = dataset == "synthetic"
-    return (count if synthetic else fixed[dataset], not synthetic, False, False,
-            False, False, False, 2 if synthetic else 4, 60 if synthetic else 720)
+    start, end = {"synthetic": ("00:00", "00:01"), "chengdu": ("07:00", "07:05"),
+                  "shanghai": ("09:00", "10:00"), "shanghai16": ("09:00", "10:00")}[dataset]
+    return (count if synthetic else fixed[dataset], not synthetic, synthetic, synthetic,
+            False, False, False, 2 if synthetic else 4, 60 if synthetic else 720,
+            start, end, "count", "count")
+
+
+@app.callback(Output("pickups", "disabled"), Input("pickup-mode", "value"))
+def pickup_count_control(mode: str):
+    return mode == "all"
+
+
+@app.callback(Output("dropoffs", "disabled"), Input("dropoff-mode", "value"))
+def dropoff_count_control(mode: str):
+    return mode == "all"
+
+
+@app.callback(Output("source-controls", "children"),
+              Input("dataset", "value"), Input("split", "value"), Input("platforms", "value"))
+def platform_sources(dataset: str, split: str, count: int):
+    if dataset == "synthetic":
+        return html.Small("Synthetic orders are generated for each platform; no source date is needed.")
+    from mpcs.config import DatasetSplit
+    from mpcs.experiments.Presets import dataset_preset
+    sources = source_options(dataset)
+    preset = dataset_preset(dataset, output_root=Path("output/maps-demo"))
+    return [html.Div(className="policy-row", children=[
+        html.Span(platform, className="platform-chip",
+                  style={"--platform-color": color_for(platform, list(preset.platform_ids))}),
+        dcc.Dropdown(id={"type": "source", "index": platform},
+                     options=[{"label": name.removeprefix("order_"), "value": name} for name in sources],
+                     value=(preset.dataset.source_files_for_platform(platform, DatasetSplit(split))[0]
+                            if preset.dataset.source_files_for_platform(platform, DatasetSplit(split))[0] in sources
+                            else sources[index]),
+                     clearable=False, className="select"),
+    ]) for index, platform in enumerate(preset.platform_ids)]
+
+
+@app.callback(
+    Output("availability", "children"),
+    Input("dataset", "value"), Input("split", "value"),
+    Input("window-start", "value"), Input("window-end", "value"),
+    Input("platforms", "value"), Input("pickups", "value"), Input("dropoffs", "value"),
+    Input({"type": "source", "index": ALL}, "id"),
+    Input({"type": "source", "index": ALL}, "value"),
+)
+def show_availability(dataset, split, start, end, platforms, pickups, dropoffs,
+                      source_ids, source_values):
+    if not start or not end or len(source_ids) != (0 if dataset == "synthetic" else int(platforms)):
+        return "Select an arrival window and one date per platform."
+    try:
+        settings = {"dataset": dataset, "split": split, "platforms": platforms,
+                    "window_start": start, "window_end": end,
+                    "pickups_per_platform": pickups or 0, "dropoffs_per_platform": dropoffs or 0,
+                    "sources": {item["index"]: value for item, value in zip(source_ids, source_values)}}
+        counts = available_orders(settings)
+        return html.Div(children=[
+            html.Strong(f"Eligible orders in {start}–{end}"),
+            _table(["Platform", "Pickup", "Dropoff"], [
+                [platform, values["pickup"], values["dropoff"]] for platform, values in counts.items()
+            ]),
+            html.Small("Synthetic counts follow the requested generated workload." if dataset == "synthetic"
+                       else "Counts follow parsing, deduplication and the operational grid filter."),
+        ])
+    except (ValueError, OSError) as error:
+        return html.Span(str(error), className="status-error")
 
 
 @app.callback(
@@ -320,68 +416,118 @@ def platform_controls(count: int, focus: str | None):
             focus if focus in platforms else "P1", controls)
 
 
+def _run_worker(job: dict[str, Any], settings: dict[str, Any]) -> None:
+    def progress(value: float, label: str) -> None:
+        job["percent"] = int(value)
+        job["label"] = label
+    try:
+        result = run_demo(settings, progress=progress)
+        REPLAY_PATH.parent.mkdir(parents=True, exist_ok=True)
+        REPLAY_PATH.write_text(json.dumps(result, ensure_ascii=False), encoding="utf-8")
+        job["result"] = result
+        progress(100, f"Completed {len(result['batches'])} frames and {len(result['steps'])} replay steps.")
+    except Exception as error:
+        job["error"] = str(error)
+        job["label"] = f"Simulation failed: {error}"
+    finally:
+        job["done"] = True
+
+
 @app.callback(
     Output("run-store", "data"), Output("run-status", "children"),
+    Output("run-progress", "value"), Output("run-poll", "disabled"),
+    Output("run-button", "disabled"), Output("load-button", "disabled"),
     Input("run-button", "n_clicks"), Input("load-button", "n_clicks"),
+    Input("run-poll", "n_intervals"),
     State("dataset", "value"), State("platforms", "value"), State("seed", "value"),
-    State("pickups", "value"), State("dropoffs", "value"), State("vehicles", "value"),
-    State("step-size", "value"), State("matcher", "value"), State("mechanism", "value"),
+    State("pickup-mode", "value"), State("pickups", "value"),
+    State("dropoff-mode", "value"), State("dropoffs", "value"),
+    State("split", "value"), State("window-start", "value"), State("window-end", "value"),
+    State({"type": "source", "index": ALL}, "id"),
+    State({"type": "source", "index": ALL}, "value"),
+    State("vehicles", "value"), State("step-size", "value"),
+    State("matcher", "value"), State("mechanism", "value"),
     State("radius", "value"), State("deadline", "value"), State("sharing", "value"),
     State({"type": "policy", "index": ALL}, "id"),
     State({"type": "policy", "index": ALL}, "value"),
-    running=[
-        (Output("run-button", "disabled"), True, False),
-        (Output("load-button", "disabled"), True, False),
-    ],
     prevent_initial_call=True,
 )
-def run_or_load(_run: int, _load: int, dataset: str, platforms: int, seed: int,
-                pickups: int, dropoffs: int, vehicles: int, step_size: int,
-                matcher: str, mechanism: str, radius: float, deadline: int,
-                sharing: float, policy_ids: list[dict], policy_values: list[str]):
-    try:
-        if ctx.triggered_id == "load-button":
+def run_or_load(_run, _load, _poll, dataset, platforms, seed, pickup_mode, pickups,
+                dropoff_mode, dropoffs, split, window_start, window_end, source_ids,
+                source_values, vehicles, step_size, matcher, mechanism, radius,
+                deadline, sharing, policy_ids, policy_values):
+    global _RUN_JOB
+    trigger = ctx.triggered_id
+    if trigger == "run-poll":
+        job = _RUN_JOB
+        if job is None:
+            return no_update, no_update, no_update, True, False, False
+        if not job["done"]:
+            return no_update, job["label"], job["percent"], False, True, True
+        _RUN_JOB = None
+        if "error" in job:
+            return no_update, html.Span(job["label"], className="status-error"), job["percent"], True, False, False
+        return (_cache_run(job["result"]), html.Span(job["label"], className="status-success"),
+                100, True, False, False)
+    if _RUN_JOB is not None:
+        return no_update, "A simulation is already running.", no_update, False, True, True
+    if trigger == "load-button":
+        try:
             result = json.loads(REPLAY_PATH.read_text(encoding="utf-8"))
+            if "analysis_end_s" not in result["meta"]:
+                raise ValueError("This replay predates window analysis; run a new scenario.")
             result["meta"]["source"] = "replay"
-            return _cache_run(result), html.Span("已加载上次运行的真实过程回放。", className="status-success")
-        settings = _settings(dataset, platforms, seed, pickups, dropoffs, vehicles,
-                             step_size, matcher, mechanism, radius, deadline, sharing,
-                             policy_ids, policy_values)
-        result = run_demo(settings)
-        REPLAY_PATH.parent.mkdir(parents=True, exist_ok=True)
-        REPLAY_PATH.write_text(json.dumps(result, ensure_ascii=False), encoding="utf-8")
-        return _cache_run(result), html.Span(
-            f"已完成 {len(result['batches'])} 个物理帧，记录 {len(result['steps'])} 个展示步骤。",
-            className="status-success",
-        )
-    except Exception as error:
-        return None, html.Span(f"运行失败：{error}", className="status-error")
+            return (_cache_run(result), html.Span("Loaded the previous replay.", className="status-success"),
+                    100, True, False, False)
+        except (OSError, ValueError) as error:
+            return no_update, html.Span(f"Replay load failed: {error}", className="status-error"), 0, True, False, False
+    try:
+        settings = _settings(dataset, platforms, seed, pickup_mode, pickups,
+                             dropoff_mode, dropoffs, split, window_start, window_end,
+                             source_ids, source_values, vehicles, step_size, matcher,
+                             mechanism, radius, deadline, sharing, policy_ids, policy_values)
+        if parse_clock(window_start) >= parse_clock(window_end):
+            raise ValueError("Arrival window end must follow its start")
+        job = {"percent": 0, "label": "Preparing scenario", "done": False}
+        _RUN_JOB = job
+        Thread(target=_run_worker, args=(job, settings), daemon=True).start()
+        return no_update, job["label"], 0, False, True, True
+    except (ValueError, TypeError) as error:
+        return no_update, html.Span(str(error), className="status-error"), 0, True, False, False
 
 
 @app.callback(
     Output("dirty-note", "children"),
     Input("run-store", "data"), Input("dataset", "value"), Input("platforms", "value"),
-    Input("seed", "value"), Input("pickups", "value"), Input("dropoffs", "value"),
+    Input("seed", "value"), Input("pickup-mode", "value"), Input("pickups", "value"),
+    Input("dropoff-mode", "value"), Input("dropoffs", "value"),
+    Input("split", "value"), Input("window-start", "value"), Input("window-end", "value"),
+    Input({"type": "source", "index": ALL}, "id"),
+    Input({"type": "source", "index": ALL}, "value"),
     Input("vehicles", "value"), Input("step-size", "value"), Input("matcher", "value"),
     Input("mechanism", "value"), Input("radius", "value"), Input("deadline", "value"),
     Input("sharing", "value"), Input({"type": "policy", "index": ALL}, "id"),
     Input({"type": "policy", "index": ALL}, "value"),
 )
 def config_notice(reference: dict | None, dataset: str, platforms: int, seed: int,
-                  pickups: int, dropoffs: int, vehicles: int, step_size: int,
+                  pickup_mode: str, pickups: int, dropoff_mode: str, dropoffs: int,
+                  split: str, window_start: str, window_end: str,
+                  source_ids: list[dict], source_values: list[str],
+                  vehicles: int, step_size: int,
                   matcher: str, mechanism: str, radius: float, deadline: int,
                   sharing: float, policy_ids: list[dict], policy_values: list[str]):
     run = _get_run(reference)
     if not run:
-        return "准备就绪 · 可直接运行默认场景"
+        return "Ready to run"
     try:
-        current = _settings(dataset, platforms, seed, pickups, dropoffs, vehicles,
-                            step_size, matcher, mechanism, radius, deadline, sharing,
-                            policy_ids, policy_values)
+        current = _settings(dataset, platforms, seed, pickup_mode, pickups,
+                            dropoff_mode, dropoffs, split, window_start, window_end,
+                            source_ids, source_values, vehicles, step_size, matcher,
+                            mechanism, radius, deadline, sharing, policy_ids, policy_values)
     except (ValueError, TypeError):
-        return "参数尚未完整；请检查输入"
-    return ("参数已修改 · 重新运行后生效" if current != run["meta"]["settings"]
-            else "当前结果对应面板设置")
+        return "Complete the configuration before running"
+    return ("Settings changed · run again to apply" if current != run["meta"]["settings"]
+            else "Results match the current settings")
 
 
 @app.callback(Output("simulation-result", "children"), Input("run-store", "data"))
@@ -390,14 +536,14 @@ def simulation_result(reference: dict | None):
     if not run:
         return html.Div(className="empty-panel", children=[
             html.Span("WORKLOAD → PARCEL → LOCAL → AUCTION → SETTLEMENT", className="eyebrow"),
-            html.P("运行后可在 Inspection 查看每个物理帧和包裹的决策路径。"),
+            html.P("Run a scenario to inspect every frame and parcel decision."),
         ])
     summary = run["summary"]
     return html.Div(className="simulation-summary", children=[
-        _metric("取件包裹", str(summary["total"]), "本次 test 场景"),
-        _metric("已分配", str(summary["assigned"]), f"分配率 {summary['assignment_rate']:.1%}"),
-        _metric("跨平台", str(summary["cross_count"]), "来源与服务平台不同"),
-        _metric("经济账本合计", f"{summary['profit']:.2f}", "非准时完成率"),
+        _metric("Pickup parcels", str(summary["total"]), f"{run['meta']['split']} split"),
+        _metric("Assigned by window end", str(summary["assigned"]), f"Assignment rate {summary['assignment_rate']:.1%}"),
+        _metric("Cross-platform", str(summary["cross_count"]), "Origin differs from serving platform"),
+        _metric("Window ledger total", f"{summary['profit']:.2f}", f"Through {clock_time(run['meta']['analysis_end_s'])}"),
     ])
 
 
@@ -411,7 +557,7 @@ def choose_parcel(reference: dict | None, click: dict | None, focus: str | None,
     if not run:
         return [], None
     catalog = run["catalog"]
-    options = [{"label": f"{item['label']} · t={item['arrival_s']}s", "value": parcel_id}
+    options = [{"label": f"{item['label']} · {clock_time(item['arrival_s'])}", "value": parcel_id}
                for parcel_id, item in catalog.items()]
     if ctx.triggered_id == "map" and click:
         custom = click["points"][0].get("customdata")
@@ -453,7 +599,7 @@ def playing(_play: int, _reset: int, _run: dict | None, value: int, active: bool
     Input("speed", "value"), Input("run-store", "data"),
 )
 def interval_control(active: bool, speed: float, run: dict | None):
-    return (not active or not run, int(1200 / float(speed or 1)), "Ⅱ 暂停" if active else "▶ 播放")
+    return (not active or not run, int(1200 / float(speed or 1)), "Ⅱ Pause" if active else "▶ Play")
 
 
 @app.callback(
@@ -484,14 +630,14 @@ def _stage_strip(stage: str, batch: int) -> list[html.Div]:
     active_index = STAGES.index(stage)
     return [html.Div(className=f"stage-item {'active' if index == active_index else 'done' if index < active_index else ''}",
                      children=[html.Span(number, className="stage-number"),
-                               html.Div([html.Strong(english), html.Small(chinese)]),
+                               html.Div([html.Strong(english), html.Small(description)]),
                                html.Span("→" if index < 4 else "", className="stage-arrow")])
-            for index, (number, english, chinese) in enumerate(STAGE_LABELS.values())]
+            for index, (number, english, description) in enumerate(STAGE_LABELS.values())]
 
 
 def _parcel_detail(run: dict[str, Any], index: int, parcel_id: str | None) -> Any:
     if not parcel_id or parcel_id not in run["catalog"]:
-        return html.P("选择一件包裹查看决策。", className="muted")
+        return html.P("Select a parcel to inspect its decisions.", className="muted")
     step = run["steps"][index]
     item = run["catalog"][parcel_id]
     state = step["state"]["parcels"].get(parcel_id, {})
@@ -507,10 +653,10 @@ def _parcel_detail(run: dict[str, Any], index: int, parcel_id: str | None) -> An
             html.Span(STATUS_LABELS.get(state.get("status"), state.get("status", "—")), className="status-badge"),
         ]),
         html.Div(className="fact-grid", children=[
-            html.Div([html.Small("来源平台"), html.Strong(item["origin"])]),
-            html.Div([html.Small("服务平台"), html.Strong(state.get("serving_platform") or "—")]),
-            html.Div([html.Small("到达 / 期限"), html.Strong(f"{item['arrival_s']} / {item['deadline_s']} s")]),
-            html.Div([html.Small("票价"), html.Strong(f"{item['fare']:.2f}")]),
+            html.Div([html.Small("Origin platform"), html.Strong(item["origin"])]),
+            html.Div([html.Small("Serving platform"), html.Strong(state.get("serving_platform") or "—")]),
+            html.Div([html.Small("Arrival / deadline"), html.Strong(f"{clock_time(item['arrival_s'])} / {clock_time(item['deadline_s'])}")]),
+            html.Div([html.Small("Fare"), html.Strong(f"{item['fare']:.2f}")]),
         ]),
     ]
     if stage_index == 0:
@@ -521,65 +667,65 @@ def _parcel_detail(run: dict[str, Any], index: int, parcel_id: str | None) -> An
             for platform in run["meta"]["platforms"]
         }
         sections.append(html.Div(className="trace-section", children=[
-            html.H4("本帧工作量"),
+            html.H4("Workload at this frame"),
             html.Div(className="workload-chips", children=[
-                html.Span(f"{platform} · {count} 件待处理")
+                html.Span(f"{platform} · {count} pending")
                 for platform, count in waiting.items()
             ]),
         ]))
     if stage_index >= 1:
         sections.append(html.Div(className="trace-section", children=[
-            html.H4("平台分池动作"),
-            html.P(action or "本帧无新动作", className="action-value"),
+            html.H4("Platform pool action"),
+            html.P(action or "No new action this frame", className="action-value"),
         ]))
     if stage_index >= 2:
         options = detail.get("local_options", [])
         matches = detail.get("local_matches", [])
         selected_vehicles = {match["vehicle_id"] for match in matches}
         sections.append(html.Div(className="trace-section", children=[
-            html.H4("本地可行匹配"),
-            _table(["候选车辆", "新增距离", "预计取件", "结果"], [
+            html.H4("Feasible local matches"),
+            _table(["Candidate EV", "Extra distance", "ETA", "Result"], [
                 [option["vehicle_id"], f"{option['extra_km']:.3f} km",
-                 f"{option['eta_s']:.0f} s", "✓ 提交" if option["vehicle_id"] in selected_vehicles else "候选"]
+                 clock_time(option['eta_s']), "✓ Committed" if option["vehicle_id"] in selected_vehicles else "Candidate"]
                 for option in options
-            ]) if options else html.P("本帧无本地可行候选或未进入本地池。", className="muted"),
+            ]) if options else html.P("No feasible local candidate in this frame.", className="muted"),
         ]))
     if stage_index >= 3:
         bids = sorted(detail.get("valid_bids", []), key=lambda row: row["amount"])
         candidate_groups = detail.get("intent_candidates", [])
         award = (detail.get("awards") or [None])[0]
         mechanism = run["meta"]["mechanism"]
-        rule = ("最低有效报价获胜；多家按次低价支付，单家按自身报价支付" if mechanism == "paper"
-                else "固定比例支付机制；选中平台报价与实付可不同")
+        rule = ("Lowest valid bid wins; payment is the second-lowest bid, or its own bid if unopposed."
+                if mechanism == "paper" else "The selected bid and payment can differ under this mechanism.")
         sections.append(html.Div(className="trace-section", children=[
-            html.H4("跨平台竞价"),
+            html.H4("Cross-platform auction"),
             html.P(rule, className="hint-line"),
             html.Div(className="candidate-line", children=[
-                html.Strong("参与候选："),
-                "；".join(f"{candidate['platform']} → {', '.join(candidate['vehicle_ids'])}"
-                         for candidate in candidate_groups) if candidate_groups else "无候选意向",
+                html.Strong("Candidate intents: "),
+                "; ".join(f"{candidate['platform']} → {', '.join(candidate['vehicle_ids'])}"
+                          for candidate in candidate_groups) if candidate_groups else "No candidate intent",
             ]),
-            _table(["平台", "有效报价", "结果"], [
+            _table(["Platform", "Valid bid", "Result"], [
                 [bid["platform"], f"{bid['amount']:.3f}",
-                 "✓ 获胜" if award and award["winner"] == bid["platform"] else "未选中"]
+                 "✓ Winner" if award and award["winner"] == bid["platform"] else "Not selected"]
                 for bid in bids
-            ]) if bids else html.P("本帧没有该包裹的有效竞价。", className="muted"),
-            html.Div(f"胜者 {award['winner']} · 实付 {award['payment']:.3f} · 有效平台 {award['valid_bidder_count']} 家",
+            ]) if bids else html.P("No valid bid for this parcel in this frame.", className="muted"),
+            html.Div(f"Winner {award['winner']} · Payment {award['payment']:.3f} · {award['valid_bidder_count']} valid bidders",
                      className="award-line") if award else None,
         ]))
     if stage_index >= 4:
         receipt = detail.get("origin_receipt")
         serving = detail.get("serving_receipt")
         sections.append(html.Div(className="trace-section", children=[
-            html.H4("执行与结算"),
-            html.P(f"结果：{detail.get('outcome', '本帧无新结果')}", className="hint-line"),
+            html.H4("Execution & settlement"),
+            html.P(f"Outcome: {detail.get('outcome', 'No new result in this frame')}", className="hint-line"),
             html.Div(className="receipt-grid", children=[
-                html.Div([html.Small("来源平台单项效用"),
+                html.Div([html.Small("Origin platform utility"),
                           html.Strong(f"{receipt['utility']:.3f}" if receipt else
                                       f"{detail['item_utility']:.3f}" if "item_utility" in detail else "—")]),
-                html.Div([html.Small("服务车辆"), html.Strong(serving["vehicle_id"] if serving else state.get("vehicle_id") or "—")]),
-                html.Div([html.Small("服务平台单项效用"), html.Strong(f"{serving['utility']:.3f}" if serving else "—")]),
-                html.Div([html.Small("跨平台支付"), html.Strong(f"{receipt['payment']:.3f}" if receipt and receipt["payment"] is not None else "—")]),
+                html.Div([html.Small("Serving EV"), html.Strong(serving["vehicle_id"] if serving else state.get("vehicle_id") or "—")]),
+                html.Div([html.Small("Serving platform utility"), html.Strong(f"{serving['utility']:.3f}" if serving else "—")]),
+                html.Div([html.Small("Cross-platform payment"), html.Strong(f"{receipt['payment']:.3f}" if receipt and receipt["payment"] is not None else "—")]),
             ]),
         ]))
     return sections
@@ -588,6 +734,7 @@ def _parcel_detail(run: dict[str, Any], index: int, parcel_id: str | None) -> An
 @app.callback(
     Output("map", "figure"), Output("current-metrics", "children"),
     Output("stage-strip", "children"), Output("parcel-details", "children"),
+    Output("platform-details", "children"),
     Output("step-label", "children"), Output("inspection-source", "children"),
     Output("map-caption", "children"),
     Input("run-store", "data"), Input("timeline", "value"),
@@ -599,31 +746,58 @@ def render_inspection(reference: dict | None, index: int | None, focus: str | No
     run = _get_run(reference)
     if not run:
         return (map_figure(None, 0, None, None), [], [],
-                html.P("先在 Simulation 运行一个场景。", className="muted"), "等待运行", "未运行",
-                "运行后显示完整处理后路网与 Station；滚轮缩放，拖动画布平移。")
+                html.P("Run a scenario in Simulation first.", className="muted"),
+                html.P("Select a platform after running a scenario.", className="muted"),
+                "Awaiting simulation", "No run",
+                "The full processed road network and stations appear after a run. Scroll to zoom and drag to pan.")
     index = max(0, min(int(index or 0), len(run["steps"]) - 1))
     step = run["steps"][index]
     metrics = step["metrics"]
     stage = STAGE_LABELS[step["stage"]]
     cards = [
-        _metric("当前物理帧", f"{step['batch']:02d}", f"t = {step['decision_time_s']} s"),
-        _metric("当前待处理", str(sum(
+        _metric("Current frame", f"{step['batch']:02d}", clock_time(step['decision_time_s'])),
+        _metric("Pending parcels", str(sum(
             parcel_state["status"] == "waiting"
             for parcel_state in step["state"]["parcels"].values()
-        )), "所有平台当前观测"),
-        _metric("已分配", f"{metrics['assigned']} / {metrics['total']}", "取件包裹"),
-        _metric("累计账本", f"{metrics['profit']:.2f}", "全平台"),
+        )), "All platforms"),
+        _metric("Assigned", f"{metrics['assigned']} / {metrics['total']}", "Pickup parcels"),
+        _metric("Cumulative ledger", f"{metrics['profit']:.2f}", "All platforms"),
     ]
+    own = [(pid, state) for pid, state in step["state"]["parcels"].items()
+           if run["catalog"][pid]["origin"] == focus]
+    matched = [state for _, state in own if state["serving_platform"]]
+    archive = metrics.get("platform_archive", {}).get(focus, {})
+    decisions = ([value for pid, value in step["decisions"].items()
+                  if run["catalog"][pid]["origin"] == focus]
+                 if step["stage"] != "workload" else [])
+    platform_cards = html.Div(children=[
+        html.Div(className="parcel-title", children=[
+            html.Div([html.Span("FOCUS PLATFORM", className="eyebrow"), html.H3(focus or "—")]),
+            html.Span(clock_time(step["decision_time_s"]), className="status-badge"),
+        ]),
+        html.Div(className="platform-stat-grid", children=[
+            _metric("Pending", str(sum(state["status"] == "waiting" for _, state in own)), "Current stage"),
+            _metric("Local decisions", str(decisions.count("LOCAL")), "This frame"),
+            _metric("Cross decisions", str(decisions.count("RELEASE")), "This frame"),
+            _metric("Matched", str(len(matched)), "Cumulative"),
+            _metric("Locally processed", str(sum(state["serving_platform"] == focus for state in matched)), "Cumulative matches"),
+            _metric("Cross-platform processed", str(sum(state["serving_platform"] != focus for state in matched)), "Cumulative matches"),
+            _metric("Current profit", f"{metrics['profit_by_platform'].get(focus, 0):.2f}", "Ledger to current stage"),
+            _metric("Local match profit", f"{archive.get('local_profit', 0):.2f}", "Cumulative"),
+            _metric("Cross-platform profit", f"{archive.get('cross_profit', 0):.2f}", "Origin + serving"),
+            _metric("Dropoff profit", f"{archive.get('dropoff_profit', 0):.2f}", "Included in current profit"),
+        ]),
+    ])
     geography = run.get("geography")
     if geography:
         caption = (
-            f"{run['meta']['dataset']} 处理后路网 · {geography['node_count']:,} 节点 / "
-            f"{geography['arc_count']:,} 有向边 · 完整绘制 {geography['display_segment_count']:,} 条不重复连接线 · "
-            f"{len(geography['stations'])} Station。"
-            "滚轮缩放、拖动平移、双击复位；包裹/车辆重合点轻微错位，匹配线不是行驶轨迹。"
+            f"{run['meta']['dataset']} processed network · {geography['node_count']:,} nodes / "
+            f"{geography['arc_count']:,} directed arcs · all {geography['display_segment_count']:,} distinct "
+            f"road connections drawn · {len(geography['stations'])} stations. "
+            "Scroll to zoom, drag to pan, double-click to reset. Overlapping parcel/EV markers are slightly offset; match lines are not routes."
         )
     else:
-        caption = "当前回放没有保存路网图层；包裹与车辆点位仍可查看。"
+        caption = "This replay has no saved road layer; parcel and EV markers remain available."
     if ctx.triggered_id in {"run-store", "map-layers"}:
         map_view = map_figure(run, index, focus, parcel, layers)
     else:
@@ -633,9 +807,9 @@ def render_inspection(reference: dict | None, index: int | None, focus: str | No
             map_view["data"][first_dynamic + position] = trace.to_plotly_json()
     return (
         map_view, cards, _stage_strip(step["stage"], step["batch"]),
-        _parcel_detail(run, index, parcel),
-        f"第 {step['batch']} 帧 · {stage[1]} · {index + 1}/{len(run['steps'])}",
-        "预计算回放" if run["meta"]["source"] == "replay" else "本次计算 · 阶段回放",
+        _parcel_detail(run, index, parcel), platform_cards,
+        f"Frame {step['batch']} · {stage[1]} · {index + 1}/{len(run['steps'])}",
+        "Loaded replay" if run["meta"]["source"] == "replay" else "Computed run · stage replay",
         caption,
     )
 
@@ -647,27 +821,29 @@ def render_inspection(reference: dict | None, index: int | None, focus: str | No
 def render_analysis(reference: dict | None, focus: str | None):
     run = _get_run(reference)
     if not run:
-        return [], html.Div("先运行场景，结果图表将在这里生成。", className="empty-panel")
+        return [], html.Div("Run a scenario to generate outcome charts.", className="empty-panel")
     summary = run["summary"]
     cards = [
-        _metric("已分配 / 总取件", f"{summary['assigned']} / {summary['total']}", f"分配率 {summary['assignment_rate']:.1%}"),
-        _metric("本地 / 跨平台", f"{summary['local_count']} / {summary['cross_count']}", "实际提交的匹配"),
-        _metric("已取件 / 已卸货", f"{summary['collected']} / {summary['unloaded']}", "完成进度"),
-        _metric("经济账本合计", f"{summary['profit']:.2f}", "来源与服务平台合计"),
+        _metric("Assigned / pickup parcels", f"{summary['assigned']} / {summary['total']}", f"Assignment rate {summary['assignment_rate']:.1%}"),
+        _metric("Local / cross matches", f"{summary['local_count']} / {summary['cross_count']}", "Committed by window end"),
+        _metric("Collected / unloaded", f"{summary['collected']} / {summary['unloaded']}", "Progress by window end"),
+        _metric("Window ledger total", f"{summary['profit']:.2f}", f"Through {clock_time(run['meta']['analysis_end_s'])}"),
     ]
     content = html.Div(children=[
         html.Div(className="chart-grid", children=[
-            _card("累计经济账本", dcc.Graph(figure=profit_figure(run, focus), config={"displayModeBar": False}), "TIME SERIES"),
-            _card("逐平台经济账本", dcc.Graph(figure=platform_profit_figure(run, focus), config={"displayModeBar": False}), "PLATFORM VIEW"),
-            _card("取件分配状态", dcc.Graph(figure=status_figure(run), config={"displayModeBar": False}), "OUTCOMES"),
-            _card("来源 → 服务平台", dcc.Graph(figure=flow_figure(run), config={"displayModeBar": False}), "COOPERATION FLOW"),
+            _card("Cumulative ledger profit", dcc.Graph(figure=profit_figure(run, focus), config={"displayModeBar": False}), "TIME SERIES"),
+            _card("Profit per minute", dcc.Graph(figure=minute_profit_figure(run, focus), config={"displayModeBar": False}), "ONE-MINUTE DELTA"),
+            _card("Profit by platform", dcc.Graph(figure=platform_profit_figure(run, focus), config={"displayModeBar": False}), "PLATFORM VIEW"),
+            _card("Pickup assignment status", dcc.Graph(figure=status_figure(run), config={"displayModeBar": False}), "OUTCOMES"),
+            _card("Origin → serving platform", dcc.Graph(figure=flow_figure(run), config={"displayModeBar": False}), "COOPERATION FLOW"),
         ]),
-        _card("本次运行信息", html.Div(className="meta-grid", children=[
-            html.Div([html.Small("数据 / split"), html.Strong(f"{run['meta']['dataset']} / {run['meta']['split']}")]),
-            html.Div([html.Small("种子"), html.Strong(str(run['meta']['seed']))]),
-            html.Div([html.Small("本地匹配"), html.Strong(run['meta']['matcher'].upper())]),
-            html.Div([html.Small("跨平台机制"), html.Strong(run['meta']['mechanism'])]),
-            html.Div([html.Small("帧数"), html.Strong(str(len(run['batches'])))]),
+        _card("Run provenance", html.Div(className="meta-grid", children=[
+            html.Div([html.Small("Dataset / split"), html.Strong(f"{run['meta']['dataset']} / {run['meta']['split']}")]),
+            html.Div([html.Small("Analysis window"), html.Strong(f"{run['meta']['settings']['window_start']}–{run['meta']['settings']['window_end']}")]),
+            html.Div([html.Small("Seed"), html.Strong(str(run['meta']['seed']))]),
+            html.Div([html.Small("Local matcher"), html.Strong(run['meta']['matcher'].upper())]),
+            html.Div([html.Small("Cross-platform mechanism"), html.Strong(run['meta']['mechanism'])]),
+            html.Div([html.Small("Analyzed / replay frames"), html.Strong(f"{summary['batch']} / {len(run['batches'])}")]),
         ]), "PROVENANCE"),
     ])
     return cards, content

@@ -8,7 +8,7 @@
 }
 
 * { box-sizing: border-box; }
-body { margin: 0; background: var(--canvas); color: var(--ink); font-family: "Segoe UI", "Microsoft YaHei", sans-serif; }
+body { margin: 0; background: var(--canvas); color: var(--ink); font-family: "Segoe UI", sans-serif; }
 button, input { font: inherit; }
 .app-shell { min-height: 100vh; }
 .topbar { background: #0f1c36; color: white; height: 76px; display: flex; align-items: center; justify-content: space-between; padding: 0 max(32px, calc((100vw - 1500px) / 2)); border-bottom: 3px solid #3b82f6; }
@@ -65,6 +65,15 @@ button, input { font: inherit; }
 .button.secondary { background: white; color: #3765a5; }
 .button.small { padding: 8px 12px; }
 .run-status { min-height: 21px; margin: 10px 3px; font-size: 12px; }
+.run-progress-wrap { margin: 14px 3px 0; }
+#run-progress { display: block; width: 100%; height: 10px; border: 0; border-radius: 99px; overflow: hidden; background: #dbe7f5; }
+#run-progress::-webkit-progress-bar { background: #dbe7f5; border-radius: 99px; }
+#run-progress::-webkit-progress-value { background: linear-gradient(90deg, #2c75e8, #24ad9d); border-radius: 99px; transition: width .35s ease; }
+#run-progress::-moz-progress-bar { background: #2c75e8; border-radius: 99px; }
+.availability { margin-top: 14px; padding: 12px; border: 1px solid #dce7f2; border-radius: 9px; background: #f7faff; color: #526884; font-size: 11px; }
+.availability > div > strong { display: block; margin-bottom: 7px; color: #234a77; }
+.availability .data-table { margin: 6px 0; }
+.availability small { color: #8194aa; }
 .status-success { color: #16845b; }
 .status-error { color: #d24949; }
 .simulation-summary, .metric-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 14px; margin: 16px 0 18px; }
@@ -85,14 +94,18 @@ button, input { font: inherit; }
 .stage-item small { font-size: 10px; margin-top: 3px; }
 .stage-arrow { position: absolute; right: 2px; color: #b8c8db; }
 .inspection-grid { display: grid; grid-template-columns: minmax(0, 1.55fr) minmax(370px, 1fr); gap: 18px; align-items: start; }
-.map-card { min-height: 610px; }
-.map-card .js-plotly-plot { min-height: 525px; }
+.map-card { min-height: 630px; }
+.map-card .js-plotly-plot { min-height: 535px; }
 .map-toolbar { display: flex; align-items: center; justify-content: space-between; gap: 8px; flex-wrap: wrap; margin: -2px 0 2px; }
 .map-layers { display: flex; flex-wrap: wrap; gap: 8px; }
 .map-layers label { display: inline-flex; align-items: center; gap: 6px; padding: 5px 9px; border: 1px solid #dce7f2; border-radius: 7px; background: #f7faff; color: #536e8d; font-size: 11px; font-weight: 700; cursor: pointer; }
 .map-layers input { accent-color: #3476eb; }
 .map-legend-hint { color: #7b8ea7; font-size: 10px; white-space: nowrap; }
-.figure-caption { font-size: 10px; color: #7c90a8; line-height: 1.5; margin: -9px 0 0 5px; }
+.figure-caption { font-size: 10px; color: #7c90a8; line-height: 1.5; margin: 2px 0 0 5px; }
+.platform-card { margin-top: 18px; }
+.platform-stat-grid { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 9px; }
+.platform-stat-grid .metric { min-height: 76px; padding: 10px 12px; background: #f7faff; }
+.platform-stat-grid .metric-value { font-size: 19px; }
 .details-card .field { margin-bottom: 15px; }
 .parcel-details { padding-right: 5px; }
 .parcel-title { display: flex; justify-content: space-between; align-items: center; gap: 12px; margin-bottom: 10px; }
@@ -130,6 +143,7 @@ button, input { font: inherit; }
   .inspection-grid { grid-template-columns: 1fr; }
   .details-card { min-height: auto; }
   .parcel-details { max-height: none; }
+  .platform-stat-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); }
 }
 @media (max-width: 850px) {
   .workspace { padding: 18px 16px 30px; }
@@ -137,6 +151,7 @@ button, input { font: inherit; }
   .topbar-context { display: none; }
   .simulation-grid, .chart-grid { grid-template-columns: 1fr; }
   .metric-grid, .simulation-summary { grid-template-columns: repeat(2, 1fr); }
+  .platform-stat-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .run-bar, .page-intro, .playback-row { align-items: start; flex-direction: column; }
 }
 @media (max-width: 560px) {
