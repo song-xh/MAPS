@@ -10,16 +10,17 @@ from typing import Any
 from dash import ALL, Dash, Input, Output, Patch, State, ctx, dcc, html, no_update
 
 from maps_demo.engine import (
-    POLICIES, STAGES, available_orders, clock_time, parse_clock, run_demo, source_options,
+    POLICIES, STAGES, available_orders, clock_time, parse_clock, run_comparison, source_options,
 )
 from maps_demo.figures import (
+    comparison_metric_figure,
+    comparison_profit_figure,
     color_for,
     flow_figure,
     map_dynamic_traces,
     map_figure,
     map_static_trace_count,
     minute_profit_figure,
-    platform_profit_figure,
     profit_figure,
     status_figure,
 )
@@ -37,8 +38,17 @@ def _cache_run(run: dict[str, Any]) -> dict[str, int]:
     return {"id": _ACTIVE_RUN_ID}
 
 
-def _get_run(reference: dict[str, int] | None) -> dict[str, Any] | None:
+def _get_result(reference: dict[str, int] | None) -> dict[str, Any] | None:
     return _ACTIVE_RUN if reference and reference.get("id") == _ACTIVE_RUN_ID else None
+
+
+def _get_run(reference: dict[str, int] | None, algorithm: str | None = None) -> dict[str, Any] | None:
+    result = _get_result(reference)
+    if not result:
+        return None
+    selected = algorithm if algorithm in result["runs"] else next(iter(result["runs"]))
+    return {**result["runs"][selected], "catalog": result["catalog"],
+            "geography": result["geography"]}
 
 
 STAGE_LABELS = {
@@ -49,14 +59,8 @@ STAGE_LABELS = {
     "settlement": ("05", "Settlement", "Assignments & ledger"),
 }
 POLICY_LABELS = {
-    "release-first": "Release all · demo rule",
-    "local-first": "Local all · demo rule",
-    "wait-first": "Wait all · demo rule",
-    "localsum": "LocalSum",
-    "rl-capa": "RL-CAPA baseline",
-    "mra": "MRA",
-    "impgta": "IMPGTA",
-    "fed-ltd": "Fed-LTD",
+    "rl-capa": "RL-CAPA", "impgta": "ImpGTA", "mra": "MRA",
+    "greedy": "Greedy", "ramcom": "RamCOM", "localsum": "LocalSum",
 }
 STATUS_LABELS = {
     "future": "Not arrived", "waiting": "Pending", "public_this_step": "Released this frame",
@@ -114,10 +118,16 @@ def _table(headers: list[str], rows: list[list[Any]]) -> html.Table:
 def _settings(dataset: str, platforms: int, seed: int, pickup_mode: str, pickups: int,
               dropoff_mode: str, dropoffs: int, split: str, window_start: str, window_end: str,
               source_ids: list[dict], source_values: list[str],
-              vehicles: int, step_size: int, matcher: str, mechanism: str,
-              radius: float, deadline: int, sharing: float,
-              policy_ids: list[dict], policy_values: list[str],
-              primary_platform: str = "P1") -> dict[str, Any]:
+              vehicles: int, step_size: int, radius: float, deadline: int,
+              sharing: float, mode: str, algorithm: str,
+              comparison_algorithms: list[str], primary_platform: str) -> dict[str, Any]:
+    algorithms = [algorithm] if mode == "single" else list(comparison_algorithms or [])
+    if mode not in {"single", "comparison"} or not algorithms or any(
+        name not in POLICIES for name in algorithms
+    ):
+        raise ValueError("Select a supported target algorithm")
+    if mode == "comparison" and len(algorithms) < 2:
+        raise ValueError("Select at least two algorithms for comparison")
     return {
         "dataset": dataset, "platforms": int(platforms), "seed": int(seed),
         "primary_platform": primary_platform,
@@ -127,10 +137,9 @@ def _settings(dataset: str, platforms: int, seed: int, pickup_mode: str, pickups
         "sources": {item["index"]: value for item, value in zip(source_ids, source_values, strict=True)}
                    if dataset != "synthetic" else {},
         "vehicles_per_platform": int(vehicles), "step_size_s": int(step_size),
-        "matcher": matcher, "mechanism": mechanism,
         "service_radius_km": float(radius), "deadline_s": int(deadline),
         "sharing_rate": float(sharing),
-        "policies": {item["index"]: value for item, value in zip(policy_ids, policy_values, strict=True)},
+        "mode": mode, "algorithms": algorithms,
     }
 
 
@@ -139,7 +148,7 @@ def _simulation_page() -> html.Div:
         html.Div(className="page-intro", children=[
             html.Div([html.Span("01 / SIMULATION", className="eyebrow"),
                       html.H2("Configure a cooperative assignment run"),
-                      html.P("Set the workload, platform sources and MPCS mechanisms. Each run produces a process replay and analysis.")]),
+                      html.P("Set the workload and target algorithm. Partner platforms handle their own parcels locally and provide spare EV capacity.")]),
             html.Div(id="dirty-note", className="dirty-note"),
         ]),
         html.Div(className="simulation-grid", children=[
@@ -152,8 +161,8 @@ def _simulation_page() -> html.Div:
                 _field("Data split", _select("split", [(name.title(), name) for name in ("train", "validation", "test")], "test")),
                 _field("Platforms", _select("platforms", [(str(n), n) for n in range(2, 17)], 4),
                        "Synthetic is adjustable; real datasets use a fixed platform count."),
-                _field("Focus platform", _select("focus-platform", [(f"P{i}", f"P{i}") for i in range(1, 5)], "P1"),
-                       "RL-CAPA uses this platform as the auction origin for the next run."),
+                _field("Target platform", _select("focus-platform", [(f"P{i}", f"P{i}") for i in range(1, 5)], "P1"),
+                       "Only this platform uses the selected algorithm and releases parcels."),
                 _field("Random seed", _number("seed", 11, minimum=0, maximum=2147483647)),
                 _field("Arrival window start", dcc.Input(id="window-start", type="time", value="00:00", className="input")),
                 _field("Arrival window end", dcc.Input(id="window-end", type="time", value="00:01", className="input")),
@@ -170,19 +179,23 @@ def _simulation_page() -> html.Div:
                 html.Div(id="source-controls", className="policy-grid"),
                 html.Div(id="availability", className="availability"),
             ]), "A / INPUT"),
-            _card("Decisions & mechanisms", html.Div(children=[
+            _card("Target algorithm", html.Div(children=[
                 html.Div(className="field-grid", children=[
-                    _field("Local matcher", _select("matcher", [("Greedy", "greedy"), ("KM · maximum matching", "km")], "km")),
-                    _field("Cross-platform mechanism", _select("mechanism", [
-                        ("Paper · reverse Vickrey", "paper"),
-                        ("Regional fixed payment", "regional-fixed"),
-                        ("Pool random candidate", "pool-random"),
-                    ], "paper"), html.Span(id="mechanism-note")),
+                    _field("Run mode", _select("run-mode", [("Single algorithm", "single"),
+                                                           ("Compare algorithms", "comparison")], "single")),
+                    html.Div(id="single-algorithm-field", children=[
+                        _field("Algorithm", _select("algorithm", [(POLICY_LABELS[name], name) for name in POLICIES], "rl-capa")),
+                    ]),
                 ]),
-                html.Div(className="section-divider"),
-                html.Div(className="inline-heading", children=[html.H4("Platform pool policies"),
-                                                          html.Small("LOCAL / RELEASE / WAIT")]),
-                html.Div(id="policy-controls", className="policy-grid"),
+                html.Div(id="comparison-algorithms-field", style={"display": "none"}, children=[
+                    _field("Algorithms to compare", dcc.Dropdown(
+                        id="comparison-algorithms", multi=True,
+                        options=[{"label": POLICY_LABELS[name], "value": name} for name in POLICIES],
+                        value=["rl-capa", "impgta", "mra"], className="select multi-select",
+                    ), "Every algorithm receives the same sampled workload and EV fleet."),
+                ]),
+                html.P("Partner platforms use a fixed local Greedy matcher in every run. "
+                       "The target algorithm controls local decisions and cooperation.", className="hint-line"),
                 html.Details(className="advanced", children=[
                     html.Summary("More simulation parameters"),
                     html.Div(className="field-grid", children=[
@@ -191,7 +204,7 @@ def _simulation_page() -> html.Div:
                         _field("Cooperation sharing rate", _number("sharing", 0.3, minimum=0.01, maximum=1, step=0.01)),
                     ]),
                 ]),
-            ]), "B / MECHANISM"),
+            ]), "B / METHOD"),
         ]),
         html.Div(className="run-bar", children=[
             html.Div([html.Span("RUN A SCENARIO", className="eyebrow"),
@@ -246,6 +259,7 @@ def _inspection_page() -> html.Div:
               "PLATFORM TRACE", "platform-card"),
         _card("Process timeline", html.Div(children=[
             html.Div(className="playback-row", children=[
+                _field("Displayed algorithm", _select("inspection-algorithm", [], None)),
                 html.Div(className="button-row", children=[
                     html.Button("▶ Play", id="play-button", className="button primary small"),
                     html.Button("←", id="prev-button", className="button secondary small"),
@@ -265,7 +279,7 @@ def _analysis_page() -> html.Div:
     return html.Div(id="analysis-page", className="page", style={"display": "none"}, children=[
         html.Div(className="page-intro", children=[
             html.Div([html.Span("03 / ANALYSIS", className="eyebrow"),
-                      html.H2("Outcomes & platform flows"),
+                      html.H2("Target platform outcomes"),
                       html.P("Analysis ends at the selected arrival window boundary; the replay continues through outstanding deadlines.")]),
             html.Button("Download replay JSON", id="download-button", className="button secondary"),
         ]),
@@ -394,39 +408,22 @@ def show_availability(dataset, split, start, end, platforms, pickups, dropoffs,
 
 @app.callback(
     Output("focus-platform", "options"), Output("focus-platform", "value"),
-    Output("policy-controls", "children"), Input("platforms", "value"),
+    Input("platforms", "value"),
     State("focus-platform", "value"),
 )
 def platform_controls(count: int, focus: str | None):
     count = int(count or 2)
     platforms = [f"P{i}" for i in range(1, count + 1)]
-    controls = []
-    defaults = ("release-first", "local-first", "mra", "impgta")
-    for index, platform in enumerate(platforms):
-        controls.append(html.Div(className="policy-row", children=[
-            html.Span(platform, className="platform-chip", style={"--platform-color": color_for(platform, platforms)}),
-            dcc.Dropdown(
-                id={"type": "policy", "index": platform},
-                options=[{"label": POLICY_LABELS[name], "value": name} for name in POLICIES],
-                value=defaults[index] if index < len(defaults) else "local-first",
-                clearable=False, className="select",
-            ),
-        ]))
     return ([{"label": platform, "value": platform} for platform in platforms],
-            focus if focus in platforms else "P1", controls)
+            focus if focus in platforms else "P1")
 
 
 @app.callback(
-    Output("mechanism", "disabled"), Output("mechanism-note", "children"),
-    Input("focus-platform", "value"),
-    Input({"type": "policy", "index": ALL}, "id"),
-    Input({"type": "policy", "index": ALL}, "value"),
+    Output("single-algorithm-field", "style"), Output("comparison-algorithms-field", "style"),
+    Input("run-mode", "value"),
 )
-def capa_mechanism(focus: str, policy_ids: list[dict], policy_values: list[str]):
-    selected = dict(zip((item["index"] for item in policy_ids), policy_values))
-    if selected.get(focus) == "rl-capa":
-        return True, "RL-CAPA uses its own local matcher and DAPA for this primary platform."
-    return False, ""
+def algorithm_controls(mode: str):
+    return ({"display": "none"}, {}) if mode == "comparison" else ({}, {"display": "none"})
 
 
 def _run_worker(job: dict[str, Any], settings: dict[str, Any]) -> None:
@@ -434,11 +431,11 @@ def _run_worker(job: dict[str, Any], settings: dict[str, Any]) -> None:
         job["percent"] = int(value)
         job["label"] = label
     try:
-        result = run_demo(settings, progress=progress)
+        result = run_comparison(settings, progress=progress)
         REPLAY_PATH.parent.mkdir(parents=True, exist_ok=True)
         REPLAY_PATH.write_text(json.dumps(result, ensure_ascii=False), encoding="utf-8")
         job["result"] = result
-        progress(100, f"Completed {len(result['batches'])} frames and {len(result['steps'])} replay steps.")
+        progress(100, f"Completed {len(result['runs'])} algorithm run(s).")
     except Exception as error:
         job["error"] = str(error)
         job["label"] = f"Simulation failed: {error}"
@@ -459,17 +456,16 @@ def _run_worker(job: dict[str, Any], settings: dict[str, Any]) -> None:
     State({"type": "source", "index": ALL}, "id"),
     State({"type": "source", "index": ALL}, "value"),
     State("vehicles", "value"), State("step-size", "value"),
-    State("matcher", "value"), State("mechanism", "value"),
     State("radius", "value"), State("deadline", "value"), State("sharing", "value"),
-    State({"type": "policy", "index": ALL}, "id"),
-    State({"type": "policy", "index": ALL}, "value"),
+    State("run-mode", "value"), State("algorithm", "value"),
+    State("comparison-algorithms", "value"),
     State("focus-platform", "value"),
     prevent_initial_call=True,
 )
 def run_or_load(_run, _load, _poll, dataset, platforms, seed, pickup_mode, pickups,
                 dropoff_mode, dropoffs, split, window_start, window_end, source_ids,
-                source_values, vehicles, step_size, matcher, mechanism, radius,
-                deadline, sharing, policy_ids, policy_values, primary_platform):
+                source_values, vehicles, step_size, radius, deadline, sharing,
+                mode, algorithm, comparison_algorithms, primary_platform):
     global _RUN_JOB
     trigger = ctx.triggered_id
     if trigger == "run-poll":
@@ -488,9 +484,10 @@ def run_or_load(_run, _load, _poll, dataset, platforms, seed, pickup_mode, picku
     if trigger == "load-button":
         try:
             result = json.loads(REPLAY_PATH.read_text(encoding="utf-8"))
-            if "analysis_end_s" not in result["meta"] or "batch_parcels" not in result["steps"][0]:
-                raise ValueError("This replay predates batch inspection; run a new scenario.")
-            result["meta"]["source"] = "replay"
+            if not result.get("runs"):
+                raise ValueError("This replay uses another format; run a new scenario.")
+            for run in result["runs"].values():
+                run["meta"]["source"] = "replay"
             return (_cache_run(result), html.Span("Loaded the previous replay.", className="status-success"),
                     100, True, False, False)
         except (OSError, ValueError) as error:
@@ -498,8 +495,8 @@ def run_or_load(_run, _load, _poll, dataset, platforms, seed, pickup_mode, picku
     try:
         settings = _settings(dataset, platforms, seed, pickup_mode, pickups,
                              dropoff_mode, dropoffs, split, window_start, window_end,
-                             source_ids, source_values, vehicles, step_size, matcher,
-                             mechanism, radius, deadline, sharing, policy_ids, policy_values,
+                             source_ids, source_values, vehicles, step_size, radius,
+                             deadline, sharing, mode, algorithm, comparison_algorithms,
                              primary_platform)
         if parse_clock(window_start) >= parse_clock(window_end):
             raise ValueError("Arrival window end must follow its start")
@@ -519,42 +516,51 @@ def run_or_load(_run, _load, _poll, dataset, platforms, seed, pickup_mode, picku
     Input("split", "value"), Input("window-start", "value"), Input("window-end", "value"),
     Input({"type": "source", "index": ALL}, "id"),
     Input({"type": "source", "index": ALL}, "value"),
-    Input("vehicles", "value"), Input("step-size", "value"), Input("matcher", "value"),
-    Input("mechanism", "value"), Input("radius", "value"), Input("deadline", "value"),
-    Input("sharing", "value"), Input({"type": "policy", "index": ALL}, "id"),
-    Input({"type": "policy", "index": ALL}, "value"), Input("focus-platform", "value"),
+    Input("vehicles", "value"), Input("step-size", "value"),
+    Input("radius", "value"), Input("deadline", "value"),
+    Input("sharing", "value"), Input("run-mode", "value"), Input("algorithm", "value"),
+    Input("comparison-algorithms", "value"), Input("focus-platform", "value"),
 )
 def config_notice(reference: dict | None, dataset: str, platforms: int, seed: int,
                   pickup_mode: str, pickups: int, dropoff_mode: str, dropoffs: int,
                   split: str, window_start: str, window_end: str,
                   source_ids: list[dict], source_values: list[str],
-                  vehicles: int, step_size: int,
-                  matcher: str, mechanism: str, radius: float, deadline: int,
-                  sharing: float, policy_ids: list[dict], policy_values: list[str],
-                  primary_platform: str):
-    run = _get_run(reference)
-    if not run:
+                  vehicles: int, step_size: int, radius: float, deadline: int,
+                  sharing: float, mode: str, algorithm: str,
+                  comparison_algorithms: list[str], primary_platform: str):
+    result = _get_result(reference)
+    if not result:
         return "Ready to run"
     try:
         current = _settings(dataset, platforms, seed, pickup_mode, pickups,
                             dropoff_mode, dropoffs, split, window_start, window_end,
-                            source_ids, source_values, vehicles, step_size, matcher,
-                            mechanism, radius, deadline, sharing, policy_ids, policy_values,
+                            source_ids, source_values, vehicles, step_size, radius,
+                            deadline, sharing, mode, algorithm, comparison_algorithms,
                             primary_platform)
     except (ValueError, TypeError):
         return "Complete the configuration before running"
-    return ("Settings changed · run again to apply" if current != run["meta"]["settings"]
+    return ("Settings changed · run again to apply" if current != result["settings"]
             else "Results match the current settings")
 
 
 @app.callback(Output("simulation-result", "children"), Input("run-store", "data"))
 def simulation_result(reference: dict | None):
-    run = _get_run(reference)
-    if not run:
+    result = _get_result(reference)
+    if not result:
         return html.Div(className="empty-panel", children=[
             html.Span("WORKLOAD → PARCEL → LOCAL → AUCTION → SETTLEMENT", className="eyebrow"),
             html.P("Run a scenario to inspect every frame and parcel decision."),
         ])
+    runs = result["runs"]
+    if len(runs) > 1:
+        return _card("Target platform comparison", _table(
+            ["Algorithm", "Assigned", "Local", "Cross", "OP", "AR", "BPT / ms"],
+            [[POLICY_LABELS[name], run["summary"]["assigned"],
+              run["summary"]["local_count"], run["summary"]["cross_count"],
+              f"{run['summary']['profit']:.2f}", f"{run['summary']['assignment_rate']:.1%}",
+              f"{run['summary']['bpt_s'] * 1000:.2f}"] for name, run in runs.items()],
+        ), "WINDOW RESULT")
+    run = _get_run(reference)
     summary = run["summary"]
     return html.Div(className="simulation-summary", children=[
         _metric("Pickup parcels", str(summary["total"]), f"{run['meta']['split']} split"),
@@ -565,22 +571,36 @@ def simulation_result(reference: dict | None):
 
 
 @app.callback(
-    Output("timeline", "max"), Input("run-store", "data"),
+    Output("inspection-algorithm", "options"), Output("inspection-algorithm", "value"),
+    Input("run-store", "data"),
 )
-def timeline_max(reference: dict | None):
-    run = _get_run(reference)
+def inspection_algorithms(reference: dict | None):
+    result = _get_result(reference)
+    if not result:
+        return [], None
+    names = list(result["runs"])
+    return ([{"label": POLICY_LABELS[name], "value": name} for name in names], names[0])
+
+
+@app.callback(
+    Output("timeline", "max"), Input("run-store", "data"), Input("inspection-algorithm", "value"),
+)
+def timeline_max(reference: dict | None, algorithm: str | None):
+    run = _get_run(reference, algorithm)
     return max(0, len(run["steps"]) - 1) if run else 0
 
 
 @app.callback(
     Output("play-state", "data"), Input("play-button", "n_clicks"),
     Input("reset-button", "n_clicks"), Input("run-store", "data"),
+    Input("inspection-algorithm", "value"),
     Input("timeline", "value"), State("play-state", "data"), State("timeline", "max"),
 )
-def playing(_play: int, _reset: int, _run: dict | None, value: int, active: bool, maximum: int):
+def playing(_play: int, _reset: int, _run: dict | None, _algorithm: str,
+            value: int, active: bool, maximum: int):
     if ctx.triggered_id == "play-button":
         return not active
-    if ctx.triggered_id in {"reset-button", "run-store"} or value >= maximum:
+    if ctx.triggered_id in {"reset-button", "run-store", "inspection-algorithm"} or value >= maximum:
         return False
     return active
 
@@ -596,19 +616,21 @@ def interval_control(active: bool, speed: float, run: dict | None):
 
 @app.callback(
     Output("timeline", "value"), Input("run-store", "data"),
+    Input("inspection-algorithm", "value"),
     Input("next-button", "n_clicks"), Input("prev-button", "n_clicks"),
     Input("reset-button", "n_clicks"), Input("play-interval", "n_intervals"),
     State("timeline", "value"), State("play-state", "data"),
 )
-def move_timeline(reference: dict | None, _next: int, _prev: int, _reset: int,
+def move_timeline(reference: dict | None, algorithm: str | None,
+                  _next: int, _prev: int, _reset: int,
                   _tick: int, value: int | None, active: bool):
-    run = _get_run(reference)
+    run = _get_run(reference, algorithm)
     if not run:
         return 0
     maximum = len(run["steps"]) - 1
     current = int(value or 0)
     trigger = ctx.triggered_id
-    if trigger in {"run-store", "reset-button"}:
+    if trigger in {"run-store", "reset-button", "inspection-algorithm"}:
         return next((step["index"] for step in run["steps"]
                      if step["stage"] == "workload" and step["decisions"]), 0)
     if trigger == "next-button" or (trigger == "play-interval" and active):
@@ -632,10 +654,6 @@ def _batch_detail(run: dict[str, Any], index: int) -> Any:
     stage_index = STAGES.index(step["stage"])
     catalog = run["catalog"]
     batch_ids = step.get("batch_parcels", [])
-    if run["meta"]["mechanism"] == "dapa":
-        primary = run["meta"]["primary_platform"]
-        batch_ids = [parcel_id for parcel_id in batch_ids
-                     if catalog[parcel_id]["origin"] == primary]
     if not batch_ids:
         return html.P("No pickup parcels await a decision in this batch.", className="muted")
     rows = []
@@ -733,22 +751,31 @@ def _batch_detail(run: dict[str, Any], index: int) -> Any:
                 _table(
                     ["Partner", "Courier bid", "Platform bid", "Auction result"]
                     if run["meta"]["mechanism"] == "dapa"
+                    else ["Partner", "Est. reservation", "Acceptance"]
+                    if run["meta"]["mechanism"] == "ramcom"
                     else ["Partner", "Valid bid", "Auction result"],
                     [([bid["platform"], f"{bid['courier_bid']:.3f}",
                        f"{bid['amount']:.3f}"] if run["meta"]["mechanism"] == "dapa"
                       else [bid["platform"], f"{bid['amount']:.3f}"])
-                     + ["Above limit" if not bid.get("valid", True) else
-                        "Winner" if award and award["winner"] == bid["platform"] else "Valid bid"]
+                     + ["Declined" if run["meta"]["mechanism"] == "ramcom" and not bid.get("valid", True)
+                        else "Above limit" if not bid.get("valid", True) else
+                        "Winner" if award and award["winner"] == bid["platform"] else
+                        "Accepted" if run["meta"]["mechanism"] == "ramcom" else "Valid bid"]
                      for bid in bids],
                 ) if bids else html.P("No eligible partner submitted a bid.", className="muted"),
                 html.Div(
                     f"Selected {award['winner']} · payment {award['payment']:.3f} "
-                    f"· {award['valid_bidder_count']} valid bids",
+                    f"· {award['valid_bidder_count']} eligible partners" if run["meta"]["mechanism"] == "ramcom"
+                    else f"Selected {award['winner']} · payment {award['payment']:.3f} "
+                         f"· {award['valid_bidder_count']} valid bids",
                     className="award-line"
                 ) if award else None,
             ]))
         sections.append(html.Div(className="auction-list", children=[
             html.H4("Cross-platform auction by parcel"),
+            html.P("RamCOM chooses the payment with highest expected origin revenue, "
+                   "samples partner acceptance, then selects the accepted shortest detour.",
+                   className="hint-line") if run["meta"]["mechanism"] == "ramcom" else
             html.P("All eligible partners quote; the lowest valid platform bid wins. "
                    "With two or more valid bids, payment is the second-lowest bid.",
                    className="hint-line") if run["meta"]["mechanism"] in {"paper", "dapa"} else None,
@@ -782,12 +809,12 @@ def _batch_detail(run: dict[str, Any], index: int) -> Any:
     Output("step-label", "children"), Output("inspection-source", "children"),
     Output("map-caption", "children"),
     Input("run-store", "data"), Input("timeline", "value"),
-    Input("focus-platform", "value"),
+    Input("inspection-algorithm", "value"),
     Input("map-layers", "value"),
 )
-def render_inspection(reference: dict | None, index: int | None, focus: str | None,
+def render_inspection(reference: dict | None, index: int | None, algorithm: str | None,
                       layers: list[str] | None):
-    run = _get_run(reference)
+    run = _get_run(reference, algorithm)
     if not run:
         return (map_figure(None, 0, None, None), [], [],
                 html.P("Run a scenario in Simulation first.", className="muted"),
@@ -796,16 +823,18 @@ def render_inspection(reference: dict | None, index: int | None, focus: str | No
                 "The full processed road network and stations appear after a run. Scroll to zoom and drag to pan.")
     index = max(0, min(int(index or 0), len(run["steps"]) - 1))
     step = run["steps"][index]
+    focus = run["meta"]["primary_platform"]
     metrics = step["metrics"]
     stage = STAGE_LABELS[step["stage"]]
     cards = [
         _metric("Current frame", f"{step['batch']:02d}", clock_time(step['decision_time_s'])),
         _metric("Pending parcels", str(sum(
-            parcel_state["status"] == "waiting"
-            for parcel_state in step["state"]["parcels"].values()
-        )), "All platforms"),
+            parcel_state["status"] in {"waiting", "cross_pool", "public_this_step"}
+            for pid, parcel_state in step["state"]["parcels"].items()
+            if run["catalog"][pid]["origin"] == focus
+        )), focus),
         _metric("Assigned", f"{metrics['assigned']} / {metrics['total']}", "Pickup parcels"),
-        _metric("Cumulative ledger", f"{metrics['profit']:.2f}", "All platforms"),
+        _metric("Cumulative ledger", f"{metrics['profit']:.2f}", focus),
     ]
     own = [(pid, state) for pid, state in step["state"]["parcels"].items()
            if run["catalog"][pid]["origin"] == focus]
@@ -816,11 +845,12 @@ def render_inspection(reference: dict | None, index: int | None, focus: str | No
                  if step["stage"] != "workload" else [])
     platform_cards = html.Div(children=[
         html.Div(className="parcel-title", children=[
-            html.Div([html.Span("FOCUS PLATFORM", className="eyebrow"), html.H3(focus or "—")]),
+            html.Div([html.Span("TARGET PLATFORM", className="eyebrow"), html.H3(focus or "—")]),
             html.Span(clock_time(step["decision_time_s"]), className="status-badge"),
         ]),
         html.Div(className="platform-stat-grid", children=[
-            _metric("Pending", str(sum(state["status"] == "waiting" for _, state in own)), "Current stage"),
+            _metric("Pending", str(sum(state["status"] in {"waiting", "cross_pool", "public_this_step"}
+                                       for _, state in own)), "Current stage"),
             _metric("Local decisions", str(decisions.count("LOCAL")), "This frame"),
             _metric("Cross decisions", str(decisions.count("RELEASE")), "This frame"),
             _metric("Matched", str(len(matched)), "Cumulative"),
@@ -828,7 +858,7 @@ def render_inspection(reference: dict | None, index: int | None, focus: str | No
             _metric("Cross-platform processed", str(sum(state["serving_platform"] != focus for state in matched)), "Cumulative matches"),
             _metric("Current profit", f"{metrics['profit_by_platform'].get(focus, 0):.2f}", "Ledger to current stage"),
             _metric("Local match profit", f"{archive.get('local_profit', 0):.2f}", "Cumulative"),
-            _metric("Cross-platform profit", f"{archive.get('cross_profit', 0):.2f}", "Origin + serving"),
+            _metric("Cross-platform profit", f"{archive.get('cross_profit', 0):.2f}", "Origin revenue"),
             _metric("Dropoff profit", f"{archive.get('dropoff_profit', 0):.2f}", "Included in current profit"),
         ]),
     ])
@@ -842,7 +872,7 @@ def render_inspection(reference: dict | None, index: int | None, focus: str | No
         )
     else:
         caption = "This replay has no saved road layer; parcel and EV markers remain available."
-    if ctx.triggered_id in {"run-store", "map-layers"}:
+    if ctx.triggered_id in {"run-store", "map-layers", "inspection-algorithm"}:
         map_view = map_figure(run, index, focus, None, layers)
     else:
         map_view = Patch()
@@ -860,34 +890,72 @@ def render_inspection(reference: dict | None, index: int | None, focus: str | No
 
 @app.callback(
     Output("final-metrics", "children"), Output("analysis-content", "children"),
-    Input("run-store", "data"), Input("focus-platform", "value"),
+    Input("run-store", "data"),
 )
-def render_analysis(reference: dict | None, focus: str | None):
-    run = _get_run(reference)
-    if not run:
+def render_analysis(reference: dict | None):
+    result = _get_result(reference)
+    if not result:
         return [], html.Div("Run a scenario to generate outcome charts.", className="empty-panel")
+    runs = {name: _get_run(reference, name) for name in result["runs"]}
+    run = next(iter(runs.values()))
+    focus = run["meta"]["primary_platform"]
     summary = run["summary"]
-    cards = [
-        _metric("Assigned / pickup parcels", f"{summary['assigned']} / {summary['total']}", f"Assignment rate {summary['assignment_rate']:.1%}"),
-        _metric("Local / cross matches", f"{summary['local_count']} / {summary['cross_count']}", "Committed by window end"),
-        _metric("Collected / unloaded", f"{summary['collected']} / {summary['unloaded']}", "Progress by window end"),
-        _metric("Window ledger total", f"{summary['profit']:.2f}", f"Through {clock_time(run['meta']['analysis_end_s'])}"),
-    ]
-    content = html.Div(children=[
-        html.Div(className="chart-grid", children=[
-            _card("Cumulative ledger profit", dcc.Graph(figure=profit_figure(run, focus), config={"displayModeBar": False}), "TIME SERIES"),
+    comparison = len(runs) > 1
+    cards = ([
+        _metric("Target platform", focus, f"{len(runs)} algorithms · same workload"),
+        _metric("Pickup parcels", str(summary["total"]), "Target origin only"),
+        _metric("Analysis cutoff", clock_time(run["meta"]["analysis_end_s"]), "Selected arrival window"),
+        _metric("Compared methods", ", ".join(name.upper() for name in runs), "OP / AR / BPT"),
+    ] if comparison else [
+        _metric("OP · operating profit", f"{summary['profit']:.2f}", focus),
+        _metric("AR · assignment rate", f"{summary['assignment_rate']:.1%}",
+                f"{summary['assigned']} / {summary['total']} target pickups"),
+        _metric("BPT · batch processing", f"{summary['bpt_s'] * 1000:.2f} ms", "Mean nonempty target batch"),
+        _metric("Local / cross", f"{summary['local_count']} / {summary['cross_count']}",
+                f"Through {clock_time(run['meta']['analysis_end_s'])}"),
+    ])
+    if comparison:
+        chart_cards = [
+            _card("Cumulative ledger profit", dcc.Graph(
+                figure=comparison_profit_figure(runs, per_minute=False), config={"displayModeBar": False}),
+                "TARGET OP BY ALGORITHM"),
+            _card("Profit per minute", dcc.Graph(
+                figure=comparison_profit_figure(runs, per_minute=True), config={"displayModeBar": False}),
+                "ONE-MINUTE TARGET DELTA"),
+            _card("OP comparison", dcc.Graph(
+                figure=comparison_metric_figure(runs, "profit"), config={"displayModeBar": False}), "LEDGER"),
+            _card("AR comparison", dcc.Graph(
+                figure=comparison_metric_figure(runs, "assignment_rate"), config={"displayModeBar": False}), "ASSIGNMENT"),
+            _card("BPT comparison", dcc.Graph(
+                figure=comparison_metric_figure(runs, "bpt_s"), config={"displayModeBar": False}), "MILLISECONDS / BATCH"),
+        ]
+    else:
+        chart_cards = [
+            _card("Cumulative ledger profit", dcc.Graph(figure=profit_figure(run, focus), config={"displayModeBar": False}), "TARGET OP"),
             _card("Profit per minute", dcc.Graph(figure=minute_profit_figure(run, focus), config={"displayModeBar": False}), "ONE-MINUTE DELTA"),
-            _card("Profit by platform", dcc.Graph(figure=platform_profit_figure(run, focus), config={"displayModeBar": False}), "PLATFORM VIEW"),
-            _card("Pickup assignment status", dcc.Graph(figure=status_figure(run), config={"displayModeBar": False}), "OUTCOMES"),
-            _card("Origin → serving platform", dcc.Graph(figure=flow_figure(run), config={"displayModeBar": False}), "COOPERATION FLOW"),
+            _card("Pickup assignment status", dcc.Graph(figure=status_figure(run), config={"displayModeBar": False}), "TARGET PARCELS"),
+            _card("Target → serving platform", dcc.Graph(figure=flow_figure(run), config={"displayModeBar": False}), "TARGET COOPERATION"),
+        ]
+    content = html.Div(children=[
+        _card("Algorithm comparison", _table(
+            ["Algorithm", "OP", "AR", "BPT / ms", "Assigned", "Local", "Cross"],
+            [[POLICY_LABELS[name], f"{item['summary']['profit']:.2f}",
+              f"{item['summary']['assignment_rate']:.1%}", f"{item['summary']['bpt_s'] * 1000:.2f}",
+              item["summary"]["assigned"], item["summary"]["local_count"],
+              item["summary"]["cross_count"]] for name, item in runs.items()],
+        ), "TARGET PLATFORM") if comparison else None,
+        html.Div(className="chart-grid", children=[
+            *chart_cards,
         ]),
         _card("Run provenance", html.Div(className="meta-grid", children=[
             html.Div([html.Small("Dataset / split"), html.Strong(f"{run['meta']['dataset']} / {run['meta']['split']}")]),
-            html.Div([html.Small("Analysis window"), html.Strong(f"{run['meta']['settings']['window_start']}–{run['meta']['settings']['window_end']}")]),
+            html.Div([html.Small("Analysis window"), html.Strong(
+                f"{clock_time(run['batches'][0]['decision_time_s'])}–{clock_time(run['meta']['analysis_end_s'])}")]),
             html.Div([html.Small("Seed"), html.Strong(str(run['meta']['seed']))]),
-            html.Div([html.Small("Local matcher"), html.Strong(run['meta']['matcher'].upper())]),
-            html.Div([html.Small("Cross-platform mechanism"), html.Strong(run['meta']['mechanism'])]),
+            html.Div([html.Small("Target platform"), html.Strong(focus)]),
+            html.Div([html.Small("Partner policy"), html.Strong("Local Greedy only")]),
             html.Div([html.Small("Analyzed / replay frames"), html.Strong(f"{summary['batch']} / {len(run['batches'])}")]),
+            html.Div([html.Small("BPT definition"), html.Strong("Target policy + local match + auction; excludes EV movement")]),
         ]), "PROVENANCE"),
     ])
     return cards, content
@@ -898,10 +966,10 @@ def render_analysis(reference: dict | None, focus: str | None):
     State("run-store", "data"), prevent_initial_call=True,
 )
 def download_replay(_clicks: int, reference: dict | None):
-    run = _get_run(reference)
-    if not run:
+    result = _get_result(reference)
+    if not result:
         return no_update
-    return dcc.send_string(json.dumps(run, ensure_ascii=False, indent=2), "maps-replay.json")
+    return dcc.send_string(json.dumps(result, ensure_ascii=False), "maps-replay.json")
 
 
 def main() -> None:

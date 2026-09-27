@@ -1,139 +1,59 @@
-"""Evidence that the demo replay reflects the executed MPCS episode."""
+"""Check target-platform scope and the replay's connection to MPCS results."""
 
 from math import isclose
 from types import SimpleNamespace
 
 import networkx as nx
 
-from maps_demo.engine import _vehicle_display, build_config, run_demo, source_options
 from maps_demo.capa import CAPAAuctioneer
+from maps_demo.engine import _vehicle_display, build_config, run_comparison, run_demo, source_options
 from maps_demo.figures import map_dynamic_traces, minute_profit_figure
+from maps_demo.ramcom import RamCOMAuctioneer
 from mpcs.core.RoadNetwork import RoadNetwork
 
 
-def settings(mechanism="paper"):
+def settings(algorithm="rl-capa"):
     return {
-        "dataset": "synthetic",
-        "platforms": 4,
-        "pickups_per_platform": 3,
-        "dropoffs_per_platform": 1,
-        "vehicles_per_platform": 2,
-        "step_size_s": 30,
-        "seed": 11,
-        "matcher": "km",
-        "mechanism": mechanism,
-        "service_radius_km": 10.0,
-        "deadline_s": 60,
-        "sharing_rate": 0.3,
-        "policies": {
-            "P1": "release-first", "P2": "local-first",
-            "P3": "mra", "P4": "impgta",
-        },
+        "dataset": "synthetic", "platforms": 4, "pickups_per_platform": 10,
+        "dropoffs_per_platform": 0, "vehicles_per_platform": 2,
+        "step_size_s": 30, "seed": 11, "service_radius_km": 10.0,
+        "deadline_s": 60, "sharing_rate": 0.3,
+        "primary_platform": "P1", "algorithm": algorithm,
     }
 
 
-def test_paper_replay_contains_actual_second_price_and_receipts():
+def test_target_replay_uses_only_target_origin_metrics_and_parcels():
     run = run_demo(settings())
     summary = run["summary"]
+    target = run["meta"]["primary_platform"]
+    assert summary["total"] == sum(item["origin"] == target for item in run["catalog"].values())
     assert summary["assigned"] == summary["local_count"] + summary["cross_count"]
-    assert isclose(summary["profit"], sum(summary["profit_by_platform"].values()))
+    assert isclose(summary["profit"], summary["profit_by_platform"][target])
+    assert set(summary["platform_archive"]) == {target}
+    assert set(summary["ledger_breakdown"]) == {target}
+    assert summary["bpt_s"] > 0
     assert len(run["steps"]) == 5 * len(run["batches"])
-    analyzed = [batch for batch in run["batches"]
-                if batch["decision_time_s"] < run["meta"]["analysis_end_s"]]
-    assert analyzed[-1]["profit"] == summary["profit"]
+    assert all(run["catalog"][pid]["origin"] == target
+               for step in run["steps"] for pid in step["batch_parcels"])
+    assert all(run["catalog"][pid]["origin"] == target
+               for step in run["steps"] for pid in step["details"])
+    assert len(run["catalog"]) == summary["total"]
+    assert {vehicle["platform"] for vehicle in run["steps"][-1]["state"]["vehicles"].values()} == set(
+        run["meta"]["platforms"])
+    assert isclose(sum(minute_profit_figure(run, target).data[0].y[:-1]), summary["profit"])
     assert run["batches"][-1]["decision_time_s"] >= run["meta"]["analysis_end_s"]
-    assert isclose(sum(minute_profit_figure(run, "P1").data[0].y), summary["profit"])
-    assert set(summary["platform_archive"]) == set(run["meta"]["platforms"])
     geography = run["geography"]
     assert geography["node_count"] == 2
     assert geography["arc_count"] == 2
     assert geography["segments"] == [[104.0, 30.7, 104.001, 30.7]]
-    assert {station["node"] for station in geography["stations"]} == {"n0", "n1"}
-    assert len(geography["stations"]) == 2
-
-    multi_bid_lots = []
-    for step in run["steps"]:
-        if step["stage"] != "settlement":
-            continue
-        for detail in step["details"].values():
-            bids = sorted(bid["amount"] for bid in detail.get("valid_bids", ()))
-            awards = detail.get("awards", ())
-            if len(bids) > 1 and awards:
-                award = awards[0]
-                multi_bid_lots.append(award)
-                assert isclose(award["winner_bid"], bids[0])
-                assert isclose(award["payment"], bids[1])
-                assert isclose(detail["origin_receipt"]["payment"], award["payment"])
-                assert isclose(detail["serving_receipt"]["payment"], award["payment"])
-    assert multi_bid_lots
 
 
-def test_fixed_payment_replay_uses_selected_mechanism():
-    run = run_demo(settings("regional-fixed"))
-    awards = [
-        (run["catalog"][parcel_id], award)
-        for step in run["steps"] if step["stage"] == "settlement"
-        for parcel_id, detail in step["details"].items()
-        for award in detail.get("awards", ())
-    ]
-    assert awards
-    for parcel, award in awards:
-        assert isclose(award["payment"], parcel["fare"] * 0.3)
-
-
-def test_selected_split_dates_and_window_build_a_valid_config():
-    chosen = source_options("chengdu")[10:14]
-    selected = settings()
-    selected.update(
-        dataset="chengdu", split="validation", window_start="07:00",
-        window_end="07:01", deadline_s=60,
-        sources={f"P{index}": day for index, day in enumerate(chosen, start=1)},
-    )
-    config = build_config(selected)
-    assert config.dataset.validation_source_files == tuple(chosen)
-    assert config.simulation.start_time_s == 7 * 3600
-    assert config.simulation.end_time_s == 7 * 3600 + 120
-
-
-def test_real_date_selection_runs_with_selected_split_and_window():
-    chosen = source_options("chengdu")[10:14]
-    selected = settings()
-    selected.update(
-        dataset="chengdu", split="validation", window_start="07:00",
-        window_end="07:01", deadline_s=60,
-        pickups_per_platform=2, dropoffs_per_platform=1,
-        sources={f"P{index}": day for index, day in enumerate(chosen, start=1)},
-    )
-    run = run_demo(selected)
-    assert run["meta"]["split"] == "validation"
-    assert run["summary"]["total"] == len(run["catalog"]) == 8
-    assert run["summary"]["batch"] == 2
-    assert len(run["batches"]) == 4
-
-
-def test_rl_capa_batch_uses_all_eligible_partner_bids_and_dapa_payment():
-    selected = settings()
-    selected.update(primary_platform="P1", vehicles_per_platform=1,
-                    pickups_per_platform=10, service_radius_km=0.1)
-    selected["policies"]["P1"] = "rl-capa"
-    run = run_demo(selected)
-    assert run["meta"]["mechanism"] == "dapa"
+def test_rl_capa_partner_auction_and_target_only_map():
+    run = run_demo(settings())
     assert run["summary"]["cross_count"] > 0
-    assert any(step["batch_parcels"] for step in run["steps"])
-    revenue_history = []
     for step in run["steps"]:
         if step["stage"] != "settlement":
             continue
-        revenue_history.extend(
-            option["revenue_score"]
-            for parcel_id, detail in step["details"].items()
-            if run["catalog"][parcel_id]["origin"] == "P1"
-            for option in detail.get("local_options", ())
-            if "revenue_score" in option
-        )
-        if revenue_history:
-            assert isclose(step["thresholds"]["P1"],
-                           0.7 * sum(revenue_history) / len(revenue_history))
         for parcel_id, detail in step["details"].items():
             for award in detail.get("awards", ()):
                 bids = sorted(bid["amount"] for bid in detail["valid_bids"] if bid["valid"])
@@ -145,9 +65,67 @@ def test_rl_capa_batch_uses_all_eligible_partner_bids_and_dapa_payment():
                          if trace.name and trace.name.endswith("parcels"))
         for trace in parcel_traces:
             for _, parcel_id, _ in trace.customdata:
+                assert run["catalog"][parcel_id]["origin"] == "P1"
                 assert step["state"]["parcels"][parcel_id]["status"] in {
                     "waiting", "cross_pool", "public_this_step",
                 }
+
+
+def test_comparison_runs_all_algorithms_on_same_target_workload():
+    selected = settings()
+    selected["algorithms"] = ["rl-capa", "impgta", "mra", "greedy", "ramcom", "localsum"]
+    result = run_comparison(selected)
+    assert list(result["runs"]) == selected["algorithms"]
+    assert len(result["catalog"]) == 10
+    for name, run in result["runs"].items():
+        assert run["meta"]["algorithm"] == name
+        assert run["meta"]["primary_platform"] == "P1"
+        assert run["summary"]["total"] == 10
+        assert run["summary"]["bpt_s"] > 0
+        assert "catalog" not in run and "geography" not in run
+
+
+def test_ramcom_releases_low_value_relative_to_sampled_threshold_and_assigns_cross():
+    selected = settings("ramcom")
+    selected["seed"] = 5
+    run = run_demo(selected)
+    released = [value for step in run["steps"] if step["stage"] == "parcel"
+                for value in step["decisions"].values()]
+    assert "RELEASE" in released
+    assert run["summary"]["cross_count"] > 0
+    assert any(detail.get("awards") for step in run["steps"] if step["stage"] == "settlement"
+               for detail in step["details"].values())
+
+
+def test_ramcom_payment_and_sampled_acceptance_fit_mpcs_award():
+    auction = RamCOMAuctioneer({"low": (2.0, 2.0), "high": (5.0, 1.0)}, seed=4)
+    lot = SimpleNamespace(parcel_token="parcel", fare_amount=10.0, decision_frame_id="frame")
+    intents = tuple(SimpleNamespace(server_payload=SimpleNamespace(
+        parcel_token="parcel", intent_token=token, bidder_platform_id=platform,
+    )) for token, platform in (("low", "P2"), ("high", "P3")))
+    award, = auction.settle((lot,), intents, None)
+    assert award.payment_amount == 2.0
+    assert award.winner_platform_id == "P3"
+    assert award.valid_bidder_count == 2
+    assert award.winner_bid_amount == award.payment_amount
+
+
+def test_real_source_dates_and_window_scope():
+    chosen = source_options("chengdu")[10:14]
+    selected = settings()
+    selected.update(dataset="chengdu", split="validation", window_start="07:00",
+                    window_end="07:01", sources={f"P{index}": day
+                                                for index, day in enumerate(chosen, start=1)},
+                    pickups_per_platform=2, dropoffs_per_platform=1)
+    config = build_config(selected)
+    assert config.dataset.validation_source_files == tuple(chosen)
+    assert config.simulation.start_time_s == 7 * 3600
+    assert config.simulation.end_time_s == 7 * 3600 + 120
+    run = run_demo(selected)
+    assert run["meta"]["split"] == "validation"
+    assert run["summary"]["total"] == 2
+    assert run["summary"]["batch"] == 2
+    assert len(run["batches"]) == 4
 
 
 def test_vehicle_display_advances_on_road_path():

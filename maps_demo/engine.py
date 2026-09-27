@@ -5,12 +5,16 @@ from __future__ import annotations
 from contextlib import contextmanager
 from dataclasses import replace
 from functools import lru_cache
-from math import ceil, fsum, isfinite
+from math import ceil, isfinite
 from pathlib import Path
+from time import perf_counter
 from typing import Any
 
 from maps_demo.geography import prepared_geography
 from maps_demo.capa import CAPAAuctioneer, CAPABidder, FIRST_LAYER_SHARE
+from maps_demo.ramcom import RamCOMAuctioneer, RamCOMBidder, RamCOMLocalMatcher, RamCOMPolicy
+from mpcs.algorithms.baseline.Framework import build_baseline_components
+from mpcs.algorithms.baseline.Greedy import GreedyParcelPolicy, build_neutral_greedy_context
 from mpcs.config import DatasetSplit, PlatformSourceFiles
 from mpcs.core.Domain import ParcelAction, ParcelDecision, PlatformActionBatch
 from mpcs.core.Framework import Environment
@@ -26,9 +30,7 @@ from mpcs.experiments.Presets import dataset_preset
 from mpcs.experiments.Runner import builtin_algorithms, builtin_cross_mechanisms
 
 STAGES = ("workload", "parcel", "local", "auction", "settlement")
-POLICIES = ("local-first", "release-first", "wait-first", "localsum", "rl-capa", "mra", "impgta", "fed-ltd")
-MECHANISMS = ("paper", "regional-fixed", "pool-random")
-MATCHERS = ("greedy", "km")
+POLICIES = ("rl-capa", "impgta", "mra", "greedy", "ramcom", "localsum")
 
 
 def clock_time(seconds: int | float) -> str:
@@ -262,7 +264,8 @@ def _vehicle_display(vehicle: Any, road: Any, path_cache: dict) -> tuple[list[fl
     return point, navigation
 
 
-def _world_snapshot(environment: Environment, road: Any, path_cache: dict) -> dict[str, Any]:
+def _world_snapshot(environment: Environment, road: Any, path_cache: dict,
+                    primary: str) -> dict[str, Any]:
     # The demo is a trusted spectator of the single local simulation.
     world = environment._world
     assert world is not None
@@ -274,7 +277,8 @@ def _world_snapshot(environment: Environment, road: Any, path_cache: dict) -> di
                 "vehicle_id": lifecycle.vehicle_id,
             }
             for parcel_id, lifecycle in world.lifecycles_by_parcel_id.items()
-            if world.parcels_by_id[parcel_id].parcel_type.value == "pickup"
+            if (world.parcels_by_id[parcel_id].parcel_type.value == "pickup"
+                and world.parcels_by_id[parcel_id].origin_platform_id == primary)
         },
         "vehicles": {
             vehicle_id: {
@@ -321,7 +325,10 @@ class _RecordingMatcher:
         self.platform_id = delegate.platform_id
 
     def plan(self, actions: Any, state: Any, planning: Any) -> Any:
+        started = perf_counter()
         proposals = self.delegate.plan(actions, state, _RecordingPlanning(planning, self.trace))
+        if self.platform_id == self.trace["primary"]:
+            self.trace["timing_s"]["local"] = perf_counter() - started
         for proposal in proposals:
             self.trace["local_matches"].append({
                 "parcel_id": proposal.parcel_id,
@@ -353,7 +360,9 @@ class _RecordingBidder:
         self.platform_id = delegate.platform_id
 
     def build_intents(self, snapshot: Any, state: Any) -> Any:
+        started = perf_counter()
         bundles = self.delegate.build_intents(snapshot, state)
+        self.trace["timing_s"]["auction"] += perf_counter() - started
         for bundle in bundles:
             self.trace["intent_candidates"].append({
                 "token": bundle.server_payload.parcel_token,
@@ -363,13 +372,24 @@ class _RecordingBidder:
         return bundles
 
 
+class _NoBidder:
+    def __init__(self, platform_id: str, selection_mode: str):
+        self.platform_id = platform_id
+        self.cross_selection_mode = selection_mode
+
+    def build_intents(self, _snapshot: Any, _state: Any) -> tuple:
+        return ()
+
+
 class _RecordingAuctioneer:
     def __init__(self, delegate: Any, trace: dict[str, Any]):
         self.delegate = delegate
         self.trace = trace
 
     def settle(self, lots: Any, intents: Any, quality: Any) -> Any:
+        started = perf_counter()
         awards = self.delegate.settle(lots, intents, quality)
+        self.trace["timing_s"]["auction"] += perf_counter() - started
         if hasattr(self.delegate, "last_bids"):
             self.trace["platform_bids"].extend(self.delegate.last_bids)
             self.trace["valid_bids"].extend(
@@ -398,6 +418,7 @@ def _empty_trace() -> dict[str, Any]:
     return {
         "local_options": [], "local_matches": [], "tokens": {},
         "intent_candidates": [], "platform_bids": [], "valid_bids": [], "awards": [],
+        "timing_s": {"local": 0.0, "auction": 0.0}, "primary": "",
     }
 
 
@@ -425,9 +446,11 @@ def _trace_for_frame(trace: dict[str, Any], result: Any) -> dict[str, Any]:
     return details
 
 
-def _catalog(prepared: Any) -> dict[str, dict[str, Any]]:
+def _catalog(prepared: Any, primary: str) -> dict[str, dict[str, Any]]:
     catalog = {}
     for platform_id, dataset in prepared.task_partition.datasets.items():
+        if platform_id != primary:
+            continue
         for number, parcel in enumerate(dataset.pickup_parcels, start=1):
             catalog[parcel.parcel_id] = {
                 "label": f"{platform_id} · #{number:02d}",
@@ -439,14 +462,6 @@ def _catalog(prepared: Any) -> dict[str, dict[str, Any]]:
                 "region": parcel.region_id,
             }
     return catalog
-
-
-def _simple_action(name: str) -> ParcelAction:
-    return {
-        "local-first": ParcelAction.LOCAL,
-        "release-first": ParcelAction.RELEASE,
-        "wait-first": ParcelAction.WAIT,
-    }[name]
 
 
 class _DemoStageReporter:
@@ -470,17 +485,12 @@ class _DemoStageReporter:
 
 def run_demo(settings: dict[str, Any], progress=None) -> dict[str, Any]:
     """Compute one selected episode and serialize its actual process."""
-    if settings["mechanism"] not in MECHANISMS or settings["matcher"] not in MATCHERS:
-        raise ValueError("Unknown matching or auction mechanism")
     config = build_config(settings)
-    policies = {platform: settings["policies"][platform] for platform in config.platform_ids}
-    if any(policy not in POLICIES for policy in policies.values()):
-        raise ValueError("Unknown platform policy")
     primary = settings.get("primary_platform", config.platform_ids[0])
-    capa_platforms = [platform for platform, policy in policies.items() if policy == "rl-capa"]
-    if capa_platforms and capa_platforms != [primary]:
-        raise ValueError("Select exactly one RL-CAPA policy on the focus platform")
-    if capa_platforms and config.auction.sharing_rate > 1.0 - FIRST_LAYER_SHARE:
+    policy = settings["algorithm"]
+    if primary not in config.platform_ids or policy not in POLICIES:
+        raise ValueError("Select one target platform and supported algorithm")
+    if policy == "rl-capa" and config.auction.sharing_rate > 1.0 - FIRST_LAYER_SHARE:
         raise ValueError("DAPA requires cooperation sharing rate ≤ 0.7 (μ1 = 0.3)")
     seed = int(settings["seed"])
     split = DatasetSplit(settings.get("split", "test"))
@@ -493,18 +503,32 @@ def run_demo(settings: dict[str, Any], progress=None) -> dict[str, Any]:
     )
     environment = None
     try:
-        catalog = _catalog(prepared)
+        catalog = _catalog(prepared, primary)
         geography = prepared_geography(prepared)
-        sessions = {}
+        session = None
         registry = builtin_algorithms()
-        for policy in set(policies.values()) - {"local-first", "release-first", "wait-first"}:
-            sessions[policy] = registry.create_pool_policy(policy, config, prepared, seed)
+        if policy in {"rl-capa", "impgta", "mra", "localsum"}:
+            session = registry.create_pool_policy(policy, config, prepared, seed)
+        elif policy == "greedy":
+            greedy = GreedyParcelPolicy(
+                platform_id=primary, road_network=prepared.road_network,
+                greedy_config=config.greedy, routing_config=config.routing,
+                travel_cost_per_km=config.reward.travel_cost_per_km,
+            )
+        else:
+            ramcom = RamCOMPolicy(primary, config, prepared.road_network,
+                                 (item["fare"] for item in catalog.values() if item["origin"] == primary), seed)
         trace = _empty_trace()
-        kwargs = dict(builtin_cross_mechanisms()[settings["mechanism"]](config, prepared, seed))
-        matchers = dict(build_local_matchers(config.platform_ids, settings["matcher"]))
-        for platform, policy in policies.items():
-            if policy == "rl-capa":
-                matchers[platform] = sessions[policy].local_matchers[platform]
+        trace["primary"] = primary
+        if policy in {"impgta", "mra", "localsum"}:
+            kwargs = dict(build_baseline_components(policy, config, prepared, random_seed=seed).environment_kwargs())
+        else:
+            kwargs = dict(builtin_cross_mechanisms()["paper"](config, prepared, seed))
+        matchers = dict(build_local_matchers(config.platform_ids, "greedy"))
+        if session is not None:
+            matchers[primary] = session.local_matchers[primary]
+        elif policy == "ramcom":
+            matchers[primary] = RamCOMLocalMatcher(primary, seed)
         kwargs["local_matchers"] = {
             platform: _RecordingMatcher(matcher, trace) for platform, matcher in matchers.items()
         }
@@ -512,8 +536,7 @@ def run_demo(settings: dict[str, Any], progress=None) -> dict[str, Any]:
             platform: _RecordingSanitizer(sanitizer, trace)
             for platform, sanitizer in kwargs["release_sanitizers"].items()
         }
-        primary = settings.get("primary_platform", config.platform_ids[0])
-        capa = policies[primary] == "rl-capa"
+        capa = policy == "rl-capa"
         if capa:
             parcels = {
                 parcel.parcel_id: parcel
@@ -527,6 +550,21 @@ def run_demo(settings: dict[str, Any], progress=None) -> dict[str, Any]:
                 for platform in config.platform_ids
             }
             kwargs["auctioneer"] = CAPAAuctioneer(config.auction.sharing_rate, config.platform_ids)
+        if policy == "ramcom":
+            parcels = {parcel.parcel_id: parcel for data in prepared.task_partition.datasets.values()
+                       for parcel in data.pickup_parcels}
+            offers = {}
+            kwargs["cross_bidders"] = {
+                platform: RamCOMBidder(platform, primary, parcels, trace["tokens"],
+                                      prepared.road_network, offers)
+                for platform in config.platform_ids
+            }
+            kwargs["auctioneer"] = RamCOMAuctioneer(offers, seed)
+        if policy not in {"rl-capa", "ramcom"}:
+            kwargs["cross_bidders"] = dict(kwargs["cross_bidders"])
+            partner = next(platform for platform in config.platform_ids if platform != primary)
+            mode = getattr(kwargs["cross_bidders"][partner], "cross_selection_mode", "auction")
+            kwargs["cross_bidders"][primary] = _NoBidder(primary, mode)
         kwargs["cross_bidders"] = {
             platform: _RecordingBidder(bidder, trace)
             for platform, bidder in kwargs["cross_bidders"].items()
@@ -541,44 +579,52 @@ def run_demo(settings: dict[str, Any], progress=None) -> dict[str, Any]:
         batch = 0
         while not environment.done:
             batch += 1
-            before = _world_snapshot(environment, prepared.road_network, path_cache)
+            before = _world_snapshot(environment, prepared.road_network, path_cache, primary)
             decision_time = environment.current_time_s
             batch_parcels = [pid for pid, state in before["parcels"].items()
                              if state["status"] in {"waiting", "cross_pool", "public_this_step"}]
-            for value in trace.values():
-                value.clear()
+            for key, value in trace.items():
+                if isinstance(value, list) or isinstance(value, dict):
+                    value.clear()
+            trace["timing_s"].update(local=0.0, auction=0.0)
             actions = {}
             for platform in config.platform_ids:
-                policy = policies[platform]
-                if policy in sessions:
-                    actions[platform] = sessions[policy].decide(platform, observations[platform], config)
-                else:
-                    action = _simple_action(policy)
+                if platform != primary:
                     actions[platform] = PlatformActionBatch(
                         frame=observations[platform].frame,
                         platform_id=platform,
                         decisions=tuple(
-                            ParcelDecision(parcel_id=parcel.parcel_id, action=action)
+                            ParcelDecision(parcel_id=parcel.parcel_id, action=ParcelAction.LOCAL)
                             for parcel in observations[platform].waiting_pickups
                         ),
                     )
+                else:
+                    started = perf_counter()
+                    if session is not None:
+                        actions[platform] = session.decide(platform, observations[platform], config)
+                    elif policy == "greedy":
+                        actions[platform] = greedy.decide(build_neutral_greedy_context(
+                            observation=observations[platform], config=config))
+                    else:
+                        actions[platform] = ramcom.decide(observations[platform])
+                    trace["timing_s"]["policy"] = perf_counter() - started
             decisions = {
                 decision.parcel_id: decision.action.name
-                for action_batch in actions.values()
-                for decision in action_batch.decisions
+                for decision in actions[primary].decisions
             }
             thresholds = {}
-            for platform, policy in policies.items():
-                if policy == "rl-capa":
-                    algorithm = sessions[policy].policies[platform]._algorithm
-                    trace["local_options"].extend(algorithm.last_candidate_pairs)
-                    thresholds[platform] = (algorithm.last_threshold
-                                            if isfinite(algorithm.last_threshold) else None)
+            if policy == "rl-capa":
+                algorithm = session.policies[primary]._algorithm
+                trace["local_options"].extend(algorithm.last_candidate_pairs)
+                thresholds[primary] = (algorithm.last_threshold
+                                       if isfinite(algorithm.last_threshold) else None)
+            elif policy == "ramcom":
+                thresholds[primary] = ramcom.threshold
             result = environment.step(actions)
-            after = _world_snapshot(environment, prepared.road_network, path_cache)
+            after = _world_snapshot(environment, prepared.road_network, path_cache, primary)
             metrics = environment.metrics
-            pickup_progress = environment.pickup_progress_snapshot
-            details = _trace_for_frame(trace, result)
+            details = {pid: value for pid, value in _trace_for_frame(trace, result).items()
+                       if pid in catalog}
             for platform_result in result.platform_results.values():
                 for receipt in platform_result.serving_assignment_receipts:
                     for parcel_id, item in details.items():
@@ -591,15 +637,16 @@ def run_demo(settings: dict[str, Any], progress=None) -> dict[str, Any]:
                                 "payment": float(receipt.cooperation_fee_amount),
                             }
             totals = {key: float(value) for key, value in metrics.ledger_totals_by_platform.items()}
-            breakdowns = {p: value.to_dict() for p, value in metrics.platform_profit_breakdowns.items()}
+            breakdowns = {primary: metrics.platform_profit_breakdowns[primary].to_dict()}
             platform_archive = {}
-            for platform in config.platform_ids:
+            for platform in (primary,):
                 own = [state for pid, state in after["parcels"].items()
                        if catalog[pid]["origin"] == platform]
                 matched = [state for state in own if state["serving_platform"]]
                 ledger = breakdowns[platform]
                 platform_archive[platform] = {
-                    "pending": sum(state["status"] == "waiting" for state in own),
+                    "pending": sum(state["status"] in {"waiting", "cross_pool", "public_this_step"}
+                                   for state in own),
                     "local_processed": sum(value == "LOCAL" for pid, value in decisions.items()
                                            if catalog[pid]["origin"] == platform),
                     "cross_processed": sum(value == "RELEASE" for pid, value in decisions.items()
@@ -609,23 +656,29 @@ def run_demo(settings: dict[str, Any], progress=None) -> dict[str, Any]:
                     "cross_matched": sum(state["serving_platform"] != platform for state in matched),
                     "profit": totals[platform],
                     "local_profit": ledger["local_utility_amount"],
-                    "cross_profit": ledger["origin_cross_utility_amount"] + ledger["serving_cross_utility_amount"],
+                    "cross_profit": ledger["origin_cross_utility_amount"],
                     "dropoff_profit": ledger["dropoff_operational_utility_amount"],
                 }
+            own_states = [state for pid, state in after["parcels"].items()
+                          if catalog[pid]["origin"] == primary]
+            matched = [state for state in own_states if state["serving_platform"]]
             record = {
                 "batch": batch,
                 "decision_time_s": decision_time,
                 "time_s": environment.current_time_s,
-                "waiting": pickup_progress.waiting,
-                "assigned": pickup_progress.assigned,
-                "expired": pickup_progress.expired,
-                "total": pickup_progress.total,
-                "collected": metrics.pickup_collected_count,
-                "unloaded": metrics.pickup_unloaded_count,
-                "local_count": metrics.local_assignment_count,
-                "cross_count": metrics.cross_assignment_count,
-                "profit": fsum(totals.values()),
-                "profit_by_platform": totals,
+                "waiting": sum(state["status"] in {"waiting", "cross_pool", "public_this_step"}
+                               for state in own_states),
+                "assigned": len(matched),
+                "expired": sum(state["status"] == "expired" for state in own_states),
+                "total": sum(item["origin"] == primary for item in catalog.values()),
+                "collected": sum(state["status"] in {"collected", "unloaded"} for state in own_states),
+                "unloaded": sum(state["status"] == "unloaded" for state in own_states),
+                "local_count": platform_archive[primary]["local_matched"],
+                "cross_count": platform_archive[primary]["cross_matched"],
+                "profit": totals[primary],
+                "profit_by_platform": {primary: totals[primary]},
+                "bpt_s": sum(trace["timing_s"].values()) if actions[primary].decisions else 0.0,
+                "has_target_batch": bool(actions[primary].decisions),
                 "platform_archive": platform_archive,
                 "ledger_breakdown_by_platform": breakdowns,
             }
@@ -635,17 +688,17 @@ def run_demo(settings: dict[str, Any], progress=None) -> dict[str, Any]:
                     "index": len(steps), "batch": batch, "stage": stage,
                     "decision_time_s": decision_time, "time_s": record["time_s"],
                     "state": after if stage == "settlement" else before,
-                    "batch_parcels": batch_parcels,
+                    "batch_parcels": [pid for pid in batch_parcels if catalog[pid]["origin"] == primary],
                     "thresholds": thresholds,
                     "decisions": decisions,
                     "details": details,
                     "metrics": record if stage == "settlement" else (batches[-2] if len(batches) > 1 else {
                         **record, "assigned": 0, "expired": 0, "collected": 0,
                         "unloaded": 0, "local_count": 0, "cross_count": 0,
-                        "profit": 0.0, "profit_by_platform": {p: 0.0 for p in config.platform_ids},
+                        "profit": 0.0, "profit_by_platform": {primary: 0.0},
                             "platform_archive": {p: {
                                 "local_profit": 0.0, "cross_profit": 0.0, "dropoff_profit": 0.0,
-                            } for p in config.platform_ids},
+                            } for p in (primary,)},
                     }),
                 })
             observations = result.next_platform_observations
@@ -662,9 +715,11 @@ def run_demo(settings: dict[str, Any], progress=None) -> dict[str, Any]:
             "meta": {
                 "dataset": settings["dataset"], "split": split.value, "seed": seed,
                 "analysis_end_s": config.dataset.arrival_window_end_s,
-                "platforms": list(config.platform_ids), "policies": policies,
-                "matcher": settings["matcher"],
-                "mechanism": "dapa" if capa else settings["mechanism"],
+                "platforms": list(config.platform_ids), "algorithm": policy,
+                "matcher": policy if session is not None else "greedy" if policy == "greedy" else "ramcom",
+                "mechanism": ("dapa" if capa else "ramcom" if policy == "ramcom" else
+                              "pool-random-fixed" if policy in {"mra", "impgta"} else
+                              "regional-fixed" if policy == "localsum" else "paper"),
                 "primary_platform": primary,
                 "settings": settings, "source": "computed",
             },
@@ -672,6 +727,8 @@ def run_demo(settings: dict[str, Any], progress=None) -> dict[str, Any]:
             "summary": {
                 **final,
                 "assignment_rate": final["assigned"] / final["total"] if final["total"] else 0.0,
+                "bpt_s": sum(item["bpt_s"] for item in analysis_batches if item["has_target_batch"])
+                         / max(1, sum(item["has_target_batch"] for item in analysis_batches)),
                 "ledger_breakdown": final["ledger_breakdown_by_platform"],
                 "flow_step_index": analysis_step["index"],
             },
@@ -680,3 +737,26 @@ def run_demo(settings: dict[str, Any], progress=None) -> dict[str, Any]:
         if environment is not None:
             environment.close()
         prepared.road_network.close()
+
+
+def run_comparison(settings: dict[str, Any], progress=None) -> dict[str, Any]:
+    """Run selected target algorithms against identical sampled input and seed."""
+    algorithms = settings["algorithms"]
+    if not algorithms or len(set(algorithms)) != len(algorithms) or any(
+        name not in POLICIES for name in algorithms
+    ):
+        raise ValueError("Select one or more distinct supported algorithms")
+    result = {"settings": settings, "runs": {}, "geography": None, "catalog": None}
+    for index, algorithm in enumerate(algorithms):
+        selected = {**settings, "algorithm": algorithm}
+        def report(percent, label):
+            if progress:
+                progress(100 * (index + percent / 100) / len(algorithms),
+                         f"{algorithm.upper()} {index + 1}/{len(algorithms)} · {label}")
+        run = run_demo(selected, progress=report)
+        if index == 0:
+            result["geography"] = run["geography"]
+            result["catalog"] = run["catalog"]
+        del run["geography"], run["catalog"]
+        result["runs"][algorithm] = run
+    return result

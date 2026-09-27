@@ -69,7 +69,7 @@ def map_dynamic_traces(run: dict[str, Any], index: int, focus: str | None,
     state = step["state"]
     visible = {
         parcel_id: item for parcel_id, item in catalog.items()
-        if state["parcels"].get(parcel_id, {}).get("status")
+        if item["origin"] == focus and state["parcels"].get(parcel_id, {}).get("status")
         in {"waiting", "public_this_step", "cross_pool"}
     }
     point_items = [(f"parcel:{pid}", item["point"]) for pid, item in visible.items()]
@@ -218,20 +218,11 @@ def profit_figure(run: dict[str, Any], focus: str | None) -> go.Figure:
     figure = go.Figure()
     figure.add_trace(go.Scatter(
         x=[item["decision_time_s"] for item in batches], y=[item["profit"] for item in batches],
-        mode="lines+markers", name="All platforms", line=dict(color="#2563eb", width=3),
+        mode="lines+markers", name=run["meta"]["algorithm"].upper(), line=dict(color="#2563eb", width=3),
         fill="tozeroy", fillcolor="rgba(37,99,235,0.08)",
         customdata=[clock_time(item["decision_time_s"]) for item in batches],
         hovertemplate="%{customdata}<br>Ledger total=%{y:.2f}<extra></extra>",
     ))
-    if focus:
-        figure.add_trace(go.Scatter(
-            x=[item["decision_time_s"] for item in batches],
-            y=[item["profit_by_platform"].get(focus, 0) for item in batches],
-            mode="lines+markers", name=focus,
-            line=dict(color=color_for(focus, run["meta"]["platforms"]), width=2, dash="dot"),
-            customdata=[clock_time(item["decision_time_s"]) for item in batches],
-            hovertemplate=f"{focus} at %{{customdata}}: %{{y:.2f}}<extra></extra>",
-        ))
     _clock_axis(figure, [batches[0]["decision_time_s"],
                          run["meta"].get("analysis_end_s", batches[-1]["time_s"])])
     figure.update_xaxes(range=[batches[0]["decision_time_s"],
@@ -248,48 +239,24 @@ def minute_profit_figure(run: dict[str, Any], focus: str | None) -> go.Figure:
     end_minute = (run["meta"].get("analysis_end_s", batches[-1]["time_s"]) - 1) // 60
     minutes = list(range(start_minute, end_minute + 1))
     totals = {minute: 0.0 for minute in minutes}
-    platform_totals = {minute: 0.0 for minute in minutes}
     previous = 0.0
-    previous_focus = 0.0
     for item in batches:
         minute = item["decision_time_s"] // 60
         totals[minute] += item["profit"] - previous
         previous = item["profit"]
-        current_focus = item["profit_by_platform"].get(focus, 0.0) if focus else 0.0
-        platform_totals[minute] += current_focus - previous_focus
-        previous_focus = current_focus
+    cutoff = run["meta"].get("analysis_end_s", batches[-1]["time_s"])
+    values = [totals[minute] for minute in minutes]
     figure = go.Figure()
-    figure.add_trace(go.Bar(
-        x=[minute * 60 for minute in minutes], y=[totals[minute] for minute in minutes],
-        name="All platforms", marker_color="#3b82f6", width=48,
-        customdata=[clock_time(minute * 60) for minute in minutes],
+    figure.add_trace(go.Scatter(
+        x=[minute * 60 for minute in minutes] + [cutoff], y=values + [values[-1]],
+        name=run["meta"]["algorithm"].upper(), mode="lines+markers",
+        line=dict(color="#3b82f6", width=2.5),
+        customdata=[clock_time(minute * 60) for minute in minutes] + [clock_time(minutes[-1] * 60)],
         hovertemplate="%{customdata}–next minute<br>Profit=%{y:.2f}<extra></extra>",
     ))
-    if focus:
-        figure.add_trace(go.Scatter(
-            x=[minute * 60 for minute in minutes], y=[platform_totals[minute] for minute in minutes],
-            name=focus, mode="lines+markers", line=dict(color=color_for(focus, run["meta"]["platforms"]), width=2),
-            customdata=[clock_time(minute * 60) for minute in minutes],
-            hovertemplate=f"{focus} at %{{customdata}}: %{{y:.2f}}<extra></extra>",
-        ))
-    _clock_axis(figure, [minute * 60 for minute in minutes], "Minute")
-    figure.update_xaxes(range=[minutes[0] * 60 - 50, minutes[-1] * 60 + 50])
+    _clock_axis(figure, [minutes[0] * 60, cutoff], "Minute")
+    figure.update_xaxes(range=[minutes[0] * 60 - 10, cutoff + 10])
     figure.update_yaxes(title="Profit in minute", gridcolor="#e9eff6")
-    return _theme(figure)
-
-
-def platform_profit_figure(run: dict[str, Any], focus: str | None) -> go.Figure:
-    platforms = run["meta"]["platforms"]
-    totals = run["summary"]["profit_by_platform"]
-    figure = go.Figure(go.Bar(
-        x=platforms, y=[totals.get(platform, 0) for platform in platforms],
-        showlegend=False,
-        marker=dict(color=[color_for(platform, platforms) for platform in platforms],
-                    line=dict(color=["#0f172a" if platform == focus else "white" for platform in platforms], width=2)),
-        text=[f"{totals.get(platform, 0):.2f}" for platform in platforms], textposition="outside",
-        hovertemplate="%{x}<br>Ledger profit=%{y:.2f}<extra></extra>",
-    ))
-    figure.update_yaxes(title="Ledger profit", gridcolor="#e9eff6")
     return _theme(figure)
 
 
@@ -316,6 +283,8 @@ def flow_figure(run: dict[str, Any]) -> go.Figure:
     final_parcels = run["steps"][flow_index]["state"]["parcels"]
     counts: Counter[tuple[str, str]] = Counter()
     for parcel_id, state in final_parcels.items():
+        if run["catalog"][parcel_id]["origin"] != run["meta"]["primary_platform"]:
+            continue
         serving = state["serving_platform"]
         if serving:
             counts[(run["catalog"][parcel_id]["origin"], serving)] += 1
@@ -336,3 +305,37 @@ def flow_figure(run: dict[str, Any]) -> go.Figure:
         ),
     ))
     return _theme(figure, height=350)
+
+
+def comparison_profit_figure(runs: dict[str, dict[str, Any]], *, per_minute: bool) -> go.Figure:
+    figure = go.Figure()
+    for index, (name, run) in enumerate(runs.items()):
+        source = minute_profit_figure(run, None) if per_minute else profit_figure(run, None)
+        series = source.data[0]
+        figure.add_trace(go.Scatter(
+            x=series.x, y=series.y, mode="lines+markers", name=name.upper(),
+            line=dict(color=PLATFORM_COLORS[index % len(PLATFORM_COLORS)], width=2.5),
+            customdata=series.customdata, hovertemplate=series.hovertemplate,
+        ))
+    first = next(iter(runs.values()))
+    start = _analysis_batches(first)[0]["decision_time_s"]
+    end = first["meta"]["analysis_end_s"]
+    _clock_axis(figure, [start, end], "Minute" if per_minute else "Time")
+    figure.update_xaxes(range=[start, end])
+    figure.update_yaxes(title="Profit in minute" if per_minute else "Ledger profit",
+                        gridcolor="#e9eff6")
+    return _theme(figure)
+
+
+def comparison_metric_figure(runs: dict[str, dict[str, Any]], metric: str) -> go.Figure:
+    names = list(runs)
+    values = [runs[name]["summary"][metric] for name in names]
+    displayed = [value * 1000 for value in values] if metric == "bpt_s" else values
+    figure = go.Figure(go.Bar(
+        x=[name.upper() for name in names], y=displayed, marker_color=PLATFORM_COLORS[:len(names)],
+        text=[f"{value:.1%}" if metric == "assignment_rate" else f"{value:.2f}" for value in displayed],
+        textposition="outside", showlegend=False,
+    ))
+    figure.update_yaxes(title={"profit": "OP · ledger profit", "assignment_rate": "AR · assignment rate",
+                               "bpt_s": "BPT · milliseconds per batch"}[metric], gridcolor="#e9eff6")
+    return _theme(figure)

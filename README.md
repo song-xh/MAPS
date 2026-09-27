@@ -9,7 +9,7 @@ python -m pip install -e ".[demo]"
 python -m maps_demo.app
 ```
 
-打开 `http://127.0.0.1:8050`。默认 synthetic 场景无需下载数据。Simulation 可选择 train / validation / test、订单到达时间窗、同城各平台的不同订单日期，并在采样前查看有效 pickup / dropoff 数量；取件和既有送件可设置数量或选取时间窗内全部有效订单。运行阶段和物理帧以进度条展示。Inspection 在完整处理后路网地图上叠加 Station、车辆、包裹和匹配关系，可缩放平移、按阶段查看包裹与平台决策档案。Analysis 按所选时间窗截断，展示累计与逐分钟账本收益、分配和平台合作流向。窗口后执行仍保留在回放中。每次运行的回放保存在 `output/maps-demo/latest.json`，页面可重新加载或下载该文件。设计与指标口径见 [MAPS 系统演示设计](docs/demo-design/07-MAPS系统演示设计.md)。
+打开 `http://127.0.0.1:8050`。默认 synthetic 场景无需下载数据。Simulation 可选择 train / validation / test、订单到达时间窗、同城各平台的不同订单日期，并在采样前查看有效 pickup / dropoff 数量；取件和既有送件可设置数量或选取时间窗内全部有效订单。选择目标平台后，可运行 RL-CAPA、ImpGTA、MRA、Greedy、RamCOM、LocalSum 中的单个算法，或在同一订单、车队与随机种子下比较多个算法。合作平台只对自身订单进行本地匹配，再以剩余运力服务目标平台释放的订单。运行阶段和物理帧以进度条展示。Inspection 可切换算法回放，在完整处理后路网地图上叠加 Station、车辆、目标包裹和匹配关系，可缩放平移、按阶段查看目标平台的批次决策档案。Analysis 按所选时间窗截断，展示目标平台 OP、AR、BPT、累计与逐分钟账本收益及跨平台服务流向。窗口后执行仍保留在回放中。每次运行的回放保存在 `output/maps-demo/latest.json`，页面可重新加载或下载该文件。设计与指标口径见 [MAPS 系统演示设计](docs/demo-design/07-MAPS系统演示设计.md)。
 
 当前 `rl-capa` 选项是 MPCS 的非学习基线，不需要模型文件；Demo 的核心是单次测试场景推演，不执行 PPO 训练。成都与上海预设依赖本地 `dataset/` 数据。
 

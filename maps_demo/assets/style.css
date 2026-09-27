@@ -25,6 +25,17 @@ button, input { font: inherit; }
 .nav-tab:hover { color: var(--blue) !important; }
 .nav-tab.selected { color: var(--blue) !important; border-bottom: 3px solid var(--blue) !important; }
 .page { display: block; }
+#simulation-page, #inspection-page { display: flex; flex-direction: column; }
+#simulation-page .page-intro, #inspection-page .page-intro { order: 0; }
+#simulation-page .run-bar { order: 1; margin-top: 0; }
+#simulation-page .run-progress-wrap { order: 2; }
+#simulation-page #simulation-result { order: 3; }
+#simulation-page .simulation-grid { order: 4; margin-top: 12px; }
+#inspection-page .playback-card { order: 1; margin: 0 0 18px; }
+#inspection-page .platform-card { order: 2; margin: 0 0 18px; }
+#inspection-page #current-metrics { order: 3; }
+#inspection-page #stage-strip { order: 4; }
+#inspection-page .inspection-grid { order: 5; }
 .page-intro { display: flex; align-items: end; justify-content: space-between; gap: 24px; margin: 0 0 23px; }
 .page-intro h2 { margin: 8px 0 6px; font-size: 26px; line-height: 1.2; letter-spacing: -.02em; }
 .page-intro p { margin: 0; color: var(--muted); line-height: 1.6; font-size: 14px; }
@@ -45,6 +56,7 @@ button, input { font: inherit; }
 .select .Select-value-label { color: var(--ink) !important; }
 .select .Select-input { height: 35px; }
 .select .Select-menu-outer { z-index: 20; border: 1px solid #dbe6f2; box-shadow: 0 8px 18px #b5c6dc66; }
+.multi-select .Select-control { height: auto !important; min-height: 37px; }
 .section-divider { height: 1px; background: #e8eef5; margin: 21px 0 16px; }
 .inline-heading { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; margin-bottom: 10px; }
 .inline-heading h4 { margin: 0; font-size: 13px; }
@@ -138,7 +150,9 @@ button, input { font: inherit; }
 .data-table tr:last-child td { border-bottom: 0; }
 .playback-card { margin-top: 18px; }
 .playback-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 17px; }
-.playback-row .select { width: 100px; flex: none; }
+.playback-row > .select { width: 100px; flex: none; }
+.playback-row > .field .select { width: 190px; }
+#analysis-content > .card { margin-bottom: 18px; }
 .step-label { color: #54708e; font-size: 12px; font-weight: 700; }
 #timeline { padding: 2px 9px 0; }
 .chart-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 18px; margin-bottom: 18px; }
