@@ -17,7 +17,7 @@ COURIER_SERVICE_SCORE = 0.8
 
 
 class CAPABidder:
-    """Send one FPSA offer whenever this partner has a feasible EV."""
+    """Send one FPSA offer whenever this partner has a feasible courier."""
 
     candidate_mode = "all"
     cross_selection_mode = "auction"

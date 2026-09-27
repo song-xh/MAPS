@@ -1,6 +1,8 @@
 # MAPS: A Multi-Platform Auction-aware Parcel Assignment System for Cooperative Urban Logistics
 
-MAPS 使用 MPCS 多平台空间众包仿真环境，内置电动车包裹取送场景。环境在同一物理帧收集全部平台动作，再统一推进任务分配、跨平台匹配、路线、结算和指标。数据准备、算法和实验流程各有独立接口。
+[English README](README.en.md) | 中文说明
+
+MAPS 使用 MPCS 多平台空间众包仿真环境，内置配送员包裹取送场景。环境在同一物理帧收集全部平台动作，再统一推进任务分配、跨平台匹配、路线、结算和指标。数据准备、算法和实验流程各有独立接口。
 
 ## 交互式系统演示
 
@@ -9,7 +11,7 @@ python -m pip install -e ".[demo]"
 python -m maps_demo.app
 ```
 
-打开 `http://127.0.0.1:8050`。默认 synthetic 场景无需下载数据。Simulation 可选择 train / validation / test、订单到达时间窗、同城各平台的不同订单日期，并在采样前查看有效 pickup / dropoff 数量；取件和既有送件可设置数量或选取时间窗内全部有效订单。选择目标平台后，可运行 RL-CAPA、ImpGTA、MRA、Greedy、RamCOM、LocalSum 中的单个算法，或在同一订单、车队与随机种子下比较多个算法。合作平台只对自身订单进行本地匹配，再以剩余运力服务目标平台释放的订单。运行阶段和物理帧以进度条展示。Inspection 可切换算法回放，在完整处理后路网地图上叠加 Station、车辆、目标包裹和匹配关系，可缩放平移、按阶段查看目标平台的批次决策档案。Analysis 按所选时间窗截断，展示目标平台 OP、AR、BPT、累计与逐分钟账本收益及跨平台服务流向。窗口后执行仍保留在回放中。每次运行的回放保存在 `output/maps-demo/latest.json`，页面可重新加载或下载该文件。设计与指标口径见 [MAPS 系统演示设计](docs/demo-design/07-MAPS系统演示设计.md)。
+打开 `http://127.0.0.1:8050`。默认 synthetic 场景无需下载数据。Simulation 可选择 train / validation / test、订单到达时间窗、同城各平台的不同订单日期，并在采样前查看有效 pickup / dropoff 数量；取件和既有送件可设置数量或选取时间窗内全部有效订单。选择目标平台后，可运行 RL-CAPA、ImpGTA、MRA、Greedy、RamCOM、LocalSum 中的单个算法，或在同一订单、配送员队伍与随机种子下比较多个算法。合作平台只对自身订单进行本地匹配，再以剩余运力服务目标平台释放的订单。运行阶段和物理帧以进度条展示。Inspection 可切换算法回放，在完整处理后路网地图上叠加 Station、配送员、目标包裹和匹配关系，可缩放平移、按阶段查看目标平台的批次决策档案。Analysis 按所选时间窗截断，展示目标平台 OP、AR、BPT、累计与逐分钟账本收益及跨平台服务流向。窗口后执行仍保留在回放中。每次运行的回放保存在 `output/maps-demo/latest.json`，页面可重新加载或下载该文件。设计与指标口径见 [MAPS 系统演示设计](docs/demo-design/07-MAPS系统演示设计.md)。
 
 当前 `rl-capa` 选项是 MPCS 的非学习基线，不需要模型文件；Demo 的核心是单次测试场景推演，不执行 PPO 训练。成都与上海预设依赖本地 `dataset/` 数据。
 
@@ -102,9 +104,9 @@ python -m mpcs sweep --dataset synthetic --methods localsum mra `
   --seeds 11 29 --max-workers 2 --output output/sweep
 ```
 
-`run` 使用内置 baseline 的完整参考实现比较选定算法；`run --local-matcher` 仅在同时提供 `--ppo-checkpoint` 时设置 PPO 的本地匹配器。`pipeline` 训练独立 PPO，并与五种 baseline 在测试集比较；`sweep` 并行比较多个种子；`train-ppo` 只训练独立 PPO，默认按轮次轮换学习平台。交互终端用一个动态 Rich 面板展示数据读取、图与区域构建、任务和车队准备、环境构建、训练、验证与比较；完成的阶段保留耗时和结果，例如图的 `nodes`、`routing_edges`、任务数与车辆数。物理帧在面板内刷新，非交互终端仅输出阶段完成摘要。`--no-progress` 关闭阶段显示，`--tensorboard` 生成 TensorBoard 事件，JSONL、CSV 和图表仍会输出。
+`run` 使用内置 baseline 的完整参考实现比较选定算法；`run --local-matcher` 仅在同时提供 `--ppo-checkpoint` 时设置 PPO 的本地匹配器。`pipeline` 训练独立 PPO，并与五种 baseline 在测试集比较；`sweep` 并行比较多个种子；`train-ppo` 只训练独立 PPO，默认按轮次轮换学习平台。交互终端用一个动态 Rich 面板展示数据读取、图与区域构建、任务和配送员队伍准备、环境构建、训练、验证与比较；完成的阶段保留耗时和结果，例如图的 `nodes`、`routing_edges`、任务数与配送员数。物理帧在面板内刷新，非交互终端仅输出阶段完成摘要。`--no-progress` 关闭阶段显示，`--tensorboard` 生成 TensorBoard 事件，JSONL、CSV 和图表仍会输出。
 
-自定义数据格式用插件注册 `config_factory(output_dir)` 和 `scenario_provider(config, split)`。提供器解析数据与地图后调用 `mpcs.data.prepare_scenario`，传入路网、区域、站点、各平台任务和初始车辆。完整实验配置可用 `--config path/to/config.json` 指定；混合阵容 JSON 用 `--scenario` 指定。详见 [扩展指南](docs/extending.md)。
+自定义数据格式用插件注册 `config_factory(output_dir)` 和 `scenario_provider(config, split)`。提供器解析数据与地图后调用 `mpcs.data.prepare_scenario`，传入路网、区域、站点、各平台任务和初始配送员。完整实验配置可用 `--config path/to/config.json` 指定；混合阵容 JSON 用 `--scenario` 指定。详见 [扩展指南](docs/extending.md)。
 
 ## 项目架构
 

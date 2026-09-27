@@ -22,6 +22,11 @@ def color_for(platform: str, platforms: list[str]) -> str:
     return PLATFORM_COLORS[platforms.index(platform) % len(PLATFORM_COLORS)]
 
 
+def courier_label(vehicle_id: str) -> str:
+    """Present existing simulator vehicle IDs using the demo's courier terminology."""
+    return vehicle_id.replace("-EV", "-Courier", 1)
+
+
 def _theme(figure: go.Figure, *, height: int = 310, margin: int = 30) -> go.Figure:
     figure.update_layout(
         paper_bgcolor="rgba(0,0,0,0)",
@@ -140,10 +145,10 @@ def map_dynamic_traces(run: dict[str, Any], index: int, focus: str | None,
         traces.append(go.Scatter(
             x=[positions[f"vehicle:{vid}"][0] for vid in vehicle_ids],
             y=[positions[f"vehicle:{vid}"][1] for vid in vehicle_ids],
-            mode="markers", name=f"{platform} EVs", legendgroup=platform, showlegend=False,
+            mode="markers", name=f"{platform} couriers", legendgroup=platform, showlegend=False,
             marker=dict(symbol="square", size=13, color=color_for(platform, platforms),
                         line=dict(color="#0f172a" if platform == focus else "white", width=2)),
-            customdata=[["vehicle", vid] for vid in vehicle_ids],
+            customdata=[["courier", courier_label(vid)] for vid in vehicle_ids],
             hovertemplate="<b>%{customdata[1]}</b><extra></extra>",
         ))
     return traces
@@ -153,7 +158,7 @@ def map_figure(run: dict[str, Any] | None, index: int, focus: str | None,
                selected: str | None, layers: list[str] | None = None) -> go.Figure:
     figure = go.Figure()
     if not run:
-        figure.add_annotation(text="Run a scenario to view parcels and EVs", showarrow=False,
+        figure.add_annotation(text="Run a scenario to view parcels and couriers", showarrow=False,
                               font=dict(size=16, color="#94a3b8"))
         return _theme(figure, height=525)
     active_layers = set(layers) if layers is not None else {"road", "station"}

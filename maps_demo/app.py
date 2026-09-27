@@ -16,6 +16,7 @@ from maps_demo.figures import (
     comparison_metric_figure,
     comparison_profit_figure,
     color_for,
+    courier_label,
     flow_figure,
     map_dynamic_traces,
     map_figure,
@@ -148,7 +149,7 @@ def _simulation_page() -> html.Div:
         html.Div(className="page-intro", children=[
             html.Div([html.Span("01 / SIMULATION", className="eyebrow"),
                       html.H2("Configure a cooperative assignment run"),
-                      html.P("Set the workload and target algorithm. Partner platforms handle their own parcels locally and provide spare EV capacity.")]),
+                      html.P("Set the workload and target algorithm. Partner platforms handle their own parcels locally and provide spare courier capacity.")]),
             html.Div(id="dirty-note", className="dirty-note"),
         ]),
         html.Div(className="simulation-grid", children=[
@@ -170,7 +171,7 @@ def _simulation_page() -> html.Div:
                 _field("Pickups per platform", _number("pickups", 3, minimum=0)),
                 _field("Dropoff sample", _select("dropoff-mode", [("Count", "count"), ("All eligible", "all")], "count")),
                 _field("Dropoffs per platform", _number("dropoffs", 1, minimum=0)),
-                _field("Vehicles per platform", _number("vehicles", 2, minimum=1)),
+                _field("Couriers per platform", _number("vehicles", 2, minimum=1)),
                 _field("Frame interval / s", _select("step-size", [(str(x), x) for x in (10, 15, 20, 30, 60)], 30)),
                 ]),
                 html.Div(className="section-divider"),
@@ -192,14 +193,14 @@ def _simulation_page() -> html.Div:
                         id="comparison-algorithms", multi=True,
                         options=[{"label": POLICY_LABELS[name], "value": name} for name in POLICIES],
                         value=["rl-capa", "impgta", "mra"], className="select multi-select",
-                    ), "Every algorithm receives the same sampled workload and EV fleet."),
+                    ), "Every algorithm receives the same sampled workload and courier fleet."),
                 ]),
                 html.P("Partner platforms use a fixed local Greedy matcher in every run. "
                        "The target algorithm controls local decisions and cooperation.", className="hint-line"),
                 html.Details(className="advanced", children=[
                     html.Summary("More simulation parameters"),
                     html.Div(className="field-grid", children=[
-                        _field("Vehicle service radius / km", _number("radius", 10.0, minimum=0.1, maximum=100, step=0.1)),
+                        _field("Courier service radius / km", _number("radius", 10.0, minimum=0.1, maximum=100, step=0.1)),
                         _field("Pickup deadline / s", _number("deadline", 60, minimum=1, maximum=1800)),
                         _field("Cooperation sharing rate", _number("sharing", 0.3, minimum=0.01, maximum=1, step=0.01)),
                     ]),
@@ -244,7 +245,7 @@ def _inspection_page() -> html.Div:
                         ],
                         value=["road", "station"], inline=True, className="map-layers",
                     ),
-                    html.Span("○ Unmatched parcel   ■ EV   ─ Road route   - - Local match   ··· Cross match", className="map-legend-hint"),
+                    html.Span("○ Unmatched parcel   ■ Courier   ─ Road route   - - Local match   ··· Cross match", className="map-legend-hint"),
                 ]),
                 dcc.Graph(id="map", figure=map_figure(None, 0, None, None), config={
                     "scrollZoom": True, "displayModeBar": True, "displaylogo": False,
@@ -672,10 +673,10 @@ def _batch_detail(run: dict[str, Any], index: int) -> Any:
             cross_count += 1
         if action == "RELEASE":
             released_count += 1
-        local_text = (f"{local['vehicle_id']} · {local['extra_km']:.2f} km" if local
+        local_text = (f"{courier_label(local['vehicle_id'])} · {local['extra_km']:.2f} km" if local
                       else "Released" if action == "RELEASE" and stage_index >= 2
                       else "No feasible match" if stage_index >= 2 else "—")
-        cross_text = (f"{award['winner']} / {serving['vehicle_id'] if serving else 'EV pending'}"
+        cross_text = (f"{award['winner']} / {courier_label(serving['vehicle_id']) if serving else 'Courier pending'}"
                       if award else "No valid bid" if action == "RELEASE" and stage_index >= 3
                       else "—")
         rows.append([
@@ -715,7 +716,7 @@ def _batch_detail(run: dict[str, Any], index: int) -> Any:
                             "Released after batch planning" if step["decisions"].get(parcel_id) == "RELEASE"
                             and revenue is not None else "Candidate")
                 candidate_rows.append([
-                    catalog[parcel_id]["label"], option["vehicle_id"],
+                    catalog[parcel_id]["label"], courier_label(option["vehicle_id"]),
                     f"{option['extra_km']:.3f} km", clock_time(option["eta_s"]),
                     f"{revenue:.3f} / {threshold:.3f}" if revenue is not None and threshold is not None else "—",
                     decision,
@@ -725,7 +726,7 @@ def _batch_detail(run: dict[str, Any], index: int) -> Any:
             html.P("Revenue score / dynamic threshold is shown for RL-CAPA pairs.",
                    className="hint-line") if step.get("thresholds") else None,
             html.Div(className="batch-table-wrap", children=_table(
-                ["Parcel", "Candidate EV", "Extra distance", "ETA", "Revenue / threshold", "Result"],
+                ["Parcel", "Candidate courier", "Extra distance", "ETA", "Revenue / threshold", "Result"],
                 candidate_rows,
             )) if candidate_rows else html.P("No feasible local candidates in this batch.", className="muted"),
         ]))
@@ -745,7 +746,7 @@ def _batch_detail(run: dict[str, Any], index: int) -> Any:
                     html.Span("Awarded" if award else "Unmatched", className="status-badge"),
                 ]),
                 html.P("Eligible partner intents: " + (
-                    "; ".join(f"{item['platform']} → {', '.join(item['vehicle_ids'])}"
+                    "; ".join(f"{item['platform']} → {', '.join(courier_label(vid) for vid in item['vehicle_ids'])}"
                               for item in candidates) if candidates else "none"
                 ), className="hint-line"),
                 _table(
@@ -871,7 +872,7 @@ def render_inspection(reference: dict | None, index: int | None, algorithm: str 
             "Scroll to zoom, drag to pan, double-click to reset. Only unmatched parcels are mapped. Solid routes follow roads; dashed connectors show matches."
         )
     else:
-        caption = "This replay has no saved road layer; parcel and EV markers remain available."
+        caption = "This replay has no saved road layer; parcel and courier markers remain available."
     if ctx.triggered_id in {"run-store", "map-layers", "inspection-algorithm"}:
         map_view = map_figure(run, index, focus, None, layers)
     else:
@@ -955,7 +956,7 @@ def render_analysis(reference: dict | None):
             html.Div([html.Small("Target platform"), html.Strong(focus)]),
             html.Div([html.Small("Partner policy"), html.Strong("Local Greedy only")]),
             html.Div([html.Small("Analyzed / replay frames"), html.Strong(f"{summary['batch']} / {len(run['batches'])}")]),
-            html.Div([html.Small("BPT definition"), html.Strong("Target policy + local match + auction; excludes EV movement")]),
+            html.Div([html.Small("BPT definition"), html.Strong("Target policy + local match + auction; excludes courier movement")]),
         ]), "PROVENANCE"),
     ])
     return cards, content

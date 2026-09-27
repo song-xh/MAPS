@@ -3650,7 +3650,7 @@ def _generate_initial_vehicles(
     region_task_counts_by_platform: Mapping[str, Mapping[str, int]],
     fleet_seeds_by_platform: Mapping[str, int] | None = None,
 ) -> Mapping[str, tuple[VehicleSnapshot, ...]]:
-    """Place each platform's EVs by its own per-Region task distribution.
+    """Place each platform's couriers by its own per-Region task distribution.
 
     Regions are pure spatial containers: the counts only decide the initial
     placement; vehicles work city-wide afterwards.
@@ -3687,7 +3687,7 @@ def _generate_initial_vehicles(
         )
         if weights.sum() <= 0:
             raise ValueError(
-                f"platform {platform_id} has no Region tasks for EV placement"
+                f"platform {platform_id} has no Region tasks for courier placement"
             )
         station_probabilities = weights / weights.sum()
         station_ordinals = rng.choice(
@@ -3698,7 +3698,7 @@ def _generate_initial_vehicles(
         generated[platform_id] = tuple(
             VehicleSnapshot(
                 vehicle_id=(
-                    f"{platform_id}-EV{vehicle_index + 1:04d}"
+                    f"{platform_id}-Courier{vehicle_index + 1:04d}"
                 ),
                 platform_id=platform_id,
                 current_road_node_id=station.road_node_id,
