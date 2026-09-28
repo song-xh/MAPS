@@ -1,3 +1,5 @@
+param([string]$PythonExe = 'python')
+
 $ErrorActionPreference = 'Stop'
 $repoRoot = Split-Path -Parent $PSScriptRoot
 Set-Location -LiteralPath $repoRoot
@@ -14,10 +16,10 @@ if (Test-Path -LiteralPath $reportPath) {
     }
 }
 
-$status = python -m scripts.preset_progress
+$status = & $PythonExe -m scripts.preset_progress 2>&1
 Add-Content -LiteralPath $logPath -Value "$(Get-Date -Format o) $status"
 if ($LASTEXITCODE -eq 0) {
-    python -m scripts.verify_preset_experiments *>> $logPath
+    & $PythonExe -m scripts.verify_preset_experiments *>> $logPath
     if ($LASTEXITCODE -eq 0) {
         Disable-ScheduledTask -TaskName $taskName | Out-Null
         exit 0
