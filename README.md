@@ -75,6 +75,7 @@ python -m maps_demo.presets all
 ```
 
 生成器按批次分块将完整阶段、地图、竞价、账本和对比数据保存至 `output/presets/`；已完成的算法可在重新运行时跳过。生成文件保存在本机，不纳入 Git；换机使用时可复制这些文件或重新生成。两个预设均为 P1–P4 使用互不重复的 `Test` 订单日期。
+在 Windows 上，[实验脚本](scripts/run_preset_experiments.ps1)会依次运行算法，并验证两个已完成的回放。[进度检查脚本](scripts/check_preset_progress.ps1)可每 30 分钟运行一次，记录到 `output/presets/monitor.log`，验证通过后会停用定时任务。
 
 运行真实城市场景时，为每个平台选择同一城市中互不重复的订单日期。有效订单表统计所选到达时间窗和运营区域内经过解析、去重的订单。取件和送件可分别选择指定采样数或 **All eligible**。`Train`、`Validation` 和 `Test` 均可选；平台日期决定所选划分使用的源文件。真实城市预设的平台数固定，Synthetic 支持 2–16 个平台。
 

@@ -75,6 +75,7 @@ python -m maps_demo.presets all
 ```
 
 The generator saves complete stage, map, auction, ledger, and comparison data under `output/presets/`, one batch chunk at a time. It can resume after a completed algorithm. The generated files are local and excluded from Git; copy them with the project or regenerate them on another machine. Both presets use distinct `Test` order dates for P1–P4.
+On Windows, [the experiment script](scripts/run_preset_experiments.ps1) runs the algorithms in sequence and verifies both completed replays. [The progress checker](scripts/check_preset_progress.ps1) can be scheduled every 30 minutes; it writes to `output/presets/monitor.log` and disables its task after verification succeeds.
 
 For a real-city run, choose a distinct order date for every platform from the same city. The availability table counts parsed, deduplicated orders inside the operational area and selected arrival window. Choose a numeric sample or **All eligible** separately for pickups and dropoffs. `Train`, `Validation`, and `Test` are selectable; platform dates supply the files for the selected split. Real-city presets have fixed platform counts; Synthetic supports 2–16 platforms.
 
