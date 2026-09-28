@@ -302,13 +302,14 @@ class _RecordingPlanning:
         self.platform_id = delegate.platform_id
 
     def _capture(self, options: Any) -> Any:
-        for option in options:
-            self.trace["local_options"].append({
-                "parcel_id": option.parcel_id,
-                "vehicle_id": option.vehicle_id,
-                "extra_km": float(option.extra_distance_km),
-                "eta_s": float(option.projected_pickup_time_s),
-            })
+        if self.platform_id == self.trace["primary"]:
+            for option in options:
+                self.trace["local_options"].append({
+                    "parcel_id": option.parcel_id,
+                    "vehicle_id": option.vehicle_id,
+                    "extra_km": float(option.extra_distance_km),
+                    "eta_s": float(option.projected_pickup_time_s),
+                })
         return options
 
     def feasible_insertions(self, parcel: Any, state: Any) -> Any:
@@ -329,14 +330,15 @@ class _RecordingMatcher:
         proposals = self.delegate.plan(actions, state, _RecordingPlanning(planning, self.trace))
         if self.platform_id == self.trace["primary"]:
             self.trace["timing_s"]["local"] = perf_counter() - started
-        for proposal in proposals:
-            self.trace["local_matches"].append({
-                "parcel_id": proposal.parcel_id,
-                "platform": proposal.platform_id,
-                "vehicle_id": proposal.vehicle_id,
-                "extra_km": float(proposal.insertion.extra_distance_km),
-                "eta_s": float(proposal.insertion.projected_pickup_time_s),
-            })
+        if self.platform_id == self.trace["primary"]:
+            for proposal in proposals:
+                self.trace["local_matches"].append({
+                    "parcel_id": proposal.parcel_id,
+                    "platform": proposal.platform_id,
+                    "vehicle_id": proposal.vehicle_id,
+                    "extra_km": float(proposal.insertion.extra_distance_km),
+                    "eta_s": float(proposal.insertion.projected_pickup_time_s),
+                })
         return proposals
 
 
