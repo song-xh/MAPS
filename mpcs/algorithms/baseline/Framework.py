@@ -74,6 +74,8 @@ class _LocalAlgorithm(LocalSumRule, RLCAPARule, MRARule, IMPGTARule, FedLTDRule)
         "_threshold_count",
         "last_threshold",
         "last_candidate_pairs",
+        "no_local_streak",
+        "last_no_local_checks",
         "_fare_by_parcel",
         "last_decision_time_s",
         "last_match_time_s",
@@ -100,6 +102,8 @@ class _LocalAlgorithm(LocalSumRule, RLCAPARule, MRARule, IMPGTARule, FedLTDRule)
         self._threshold_count = 0
         self.last_threshold = float("inf")
         self.last_candidate_pairs = ()
+        self.no_local_streak: dict[str, int] = {}
+        self.last_no_local_checks: dict[str, int] = {}
         self._fare_by_parcel: dict[str, float] = {}
         self.last_decision_time_s = 0.0
         self.last_match_time_s = 0.0
@@ -148,6 +152,22 @@ class _LocalAlgorithm(LocalSumRule, RLCAPARule, MRARule, IMPGTARule, FedLTDRule)
         plan = self.plan(requests, state, planning)
         self.cache.put(plan)
         selected = plan.selected_ids
+        active_ids = {request.parcel_id for request in requests}
+        self.no_local_streak = {
+            parcel_id: count for parcel_id, count in self.no_local_streak.items()
+            if parcel_id in active_ids
+        }
+        self.last_no_local_checks = {}
+        if self.method is BaselineMethod.RL_CAPA:
+            feasible_ids = {pair["parcel_id"] for pair in self.last_candidate_pairs}
+            for request in requests:
+                parcel_id = request.parcel_id
+                if parcel_id in feasible_ids:
+                    self.no_local_streak.pop(parcel_id, None)
+                else:
+                    checks = self.no_local_streak.get(parcel_id, 0) + 1
+                    self.no_local_streak[parcel_id] = checks
+                    self.last_no_local_checks[parcel_id] = checks
         unmatched_action = (
             ParcelAction.WAIT
             if self.method is BaselineMethod.LOCALSUM
@@ -159,6 +179,9 @@ class _LocalAlgorithm(LocalSumRule, RLCAPARule, MRARule, IMPGTARule, FedLTDRule)
                 action=(
                     ParcelAction.LOCAL
                     if request.parcel_id in selected
+                    else ParcelAction.WAIT
+                    if self.method is BaselineMethod.RL_CAPA
+                    and self.last_no_local_checks.get(request.parcel_id, 10) < 10
                     else unmatched_action
                 ),
             )

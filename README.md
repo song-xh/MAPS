@@ -14,7 +14,7 @@ MAPS 依托 Guanglei Zhu 等人的研究手稿 *Auction-Aware Crowdsourced Parce
 | DLAM 与 DAPA | 双层竞价首先通过第一价格密封竞价在各合作平台内部选择配送员，再通过平台间的逆向维克里竞价确定服务平台和支付额。 |
 | RL-CAPA | 两个学习策略自适应地调整分配过程：第一阶段选择批次时长，第二阶段逐包裹决定延后至下一批还是进入竞价池。论文以收益、完成率和批次处理时间研究该自适应方法及 CAPA。 |
 
-MAPS 中的 **RL-CAPA** 选项按照 Simulation 中选择的帧间隔运行当前 MPCS 的 CAMA/DAPA 分配流程。Inspection 展示该次运行记录的本地候选、阈值、合作平台报价、获胜分配和结算结果。
+MAPS 中的 **RL-CAPA** 选项按照 Simulation 中选择的帧间隔运行当前 MPCS 的 CAMA/DAPA 分配流程。没有可行本地配送员的包裹最多等待连续十个批次，在第十次检查仍不可行时进入竞价池。Inspection 展示等待次数、本地候选、阈值、合作平台报价、获胜分配和结算结果。
 
 ## 系统演示
 
@@ -29,11 +29,11 @@ flowchart LR
 
 | 模块 | 观众操作与展示结果 |
 | --- | --- |
-| **Simulation** | 选择数据集和划分、到达时间窗、各平台同城且互不重复的订单日期、取件与送件采样数或全部有效订单、配送员数量、服务半径、期限、帧间隔、随机种子、目标平台及一个或多个算法；运行场景并查看进度和目标平台结果摘要。 |
+| **Simulation** | 配置自定义仿真，或加载预计算的成都、上海对比回放。自定义控件包括数据集和划分、到达时间窗、各平台同城且互不重复的订单日期、取送件数量或全部有效订单、配送员数量、服务半径、期限、帧间隔、随机种子、目标平台及算法；查看仿真进度和目标平台结果。 |
 | **Inspection** | 选择算法，播放或逐步查看批次与五个处理阶段；检查包裹状态、本地候选、合作平台报价、支付以及目标平台决策档案；在可缩放平移的完整处理后路网上查看站点、移动中的配送员及其路线、未匹配的目标包裹和匹配连线。 |
-| **Analysis** | 对比目标平台的 OP、AR、BPT、本地与跨平台分配、累计与逐分钟账本收益，以及目标平台到服务平台的流向；下载回放。 |
+| **Analysis** | 对比目标平台的 OP、AR、BPT、本地与跨平台分配、累计与逐分钟账本收益，以及目标平台到服务平台的流向；下载自定义运行的回放。 |
 
-选定的目标平台对自己的包裹执行待比较的决策。合作平台先在本地处理自己的任务，再提供剩余的可行配送员运力。对比运行使用相同的采样订单、初始配送员队伍和随机种子。平台颜色区分配送员，目标平台会突出显示。地图不绘制区域多边形。
+选定的目标平台对自己的包裹执行待比较的决策。对比运行使用相同的订单、初始配送员队伍和随机种子。平台颜色区分配送员，目标平台会突出显示。地图不绘制区域多边形。
 
 ## 安装与启动
 
@@ -53,6 +53,8 @@ python -m maps_demo.app
 3. 在 **Analysis** 中查看目标平台的分配与收益指标。逐分钟折线表示账本增量，累计折线表示其运行总额。
 4. 返回 **Simulation**，选择 **Compare algorithms**，从 `RL-CAPA`、`ImpGTA`、`MRA`、`Greedy`、`RamCOM` 和 `LocalSum` 中至少选择两个算法并重新运行。在 Inspection 中切换 **Displayed algorithm**，在 Analysis 中比较结果，再使用 **Download replay JSON** 保存运行产物。
 
+若要查看预先计算的城市对比，在 **Scenario source** 中选择 **Precomputed preset**，选择成都或上海，再点击 **Load preset replay**。预设固定以 P1 为目标平台，包含四个平台、时间窗内全部有效订单、20 秒批次间隔和六种算法。成都使用 08:00–09:00、每平台 300 名配送员；上海使用 09:00–10:00、每平台 100 名配送员。两者的取件期限均为 720 秒。Inspection 和 Analysis 直接使用保存的过程及结果，不会重新仿真。
+
 运行后修改控件不会更新当前回放；点击 **Run simulation** 才会应用新设置。
 
 ### 真实城市数据
@@ -65,6 +67,14 @@ python -m mpcs.utils.DataUtils `
   --output-root dataset/Didichuxing/Chengdu/parcel_v2 `
   --seed 20250308
 ```
+
+准备两座城市的数据后，生成固定城市回放：
+
+```powershell
+python -m maps_demo.presets all
+```
+
+生成器按批次分块将完整阶段、地图、竞价、账本和对比数据保存至 `output/presets/`；已完成的算法可在重新运行时跳过。生成文件保存在本机，不纳入 Git；换机使用时可复制这些文件或重新生成。两个预设均为 P1–P4 使用互不重复的 `Test` 订单日期。
 
 运行真实城市场景时，为每个平台选择同一城市中互不重复的订单日期。有效订单表统计所选到达时间窗和运营区域内经过解析、去重的订单。取件和送件可分别选择指定采样数或 **All eligible**。`Train`、`Validation` 和 `Test` 均可选；平台日期决定所选划分使用的源文件。真实城市预设的平台数固定，Synthetic 支持 2–16 个平台。
 
@@ -79,7 +89,7 @@ python -m mpcs.utils.DataUtils `
 
 仿真会继续处理未到取件期限的任务，但 Analysis 在所选到达时间窗结束时截断。若时间窗为 `10:00–11:00`，图表和汇总指标只使用 `11:00` 之前的帧；后续帧仍可在 Inspection 中查看。一次对比只对应一个配对随机种子的场景；若要得出一般性的性能结论，应使用更多种子重复运行。
 
-最新运行保存在 `output/maps-demo/latest.json`。**Load last replay** 可在不重新仿真的情况下打开该文件；**Download replay JSON** 可导出当前运行。对比回放共用一份路网和包裹目录，每个算法分别保存决策轨迹和摘要。
+最新的自定义运行保存在 `output/maps-demo/latest.json`。**Load last replay** 可在不重新仿真的情况下打开该文件；**Download replay JSON** 可导出该运行。固定预设在 `output/presets/` 下共用一份路网和包裹目录，为各算法分别保存摘要和压缩批次分块；Inspection 仅按需读取选中的分块。
 
 ## 代码与研究命令行
 
@@ -87,6 +97,7 @@ python -m mpcs.utils.DataUtils `
 | --- | --- |
 | [maps_demo/app.py](maps_demo/app.py) | Dash 控件、进度、回放与分析。 |
 | [maps_demo/engine.py](maps_demo/engine.py) | 场景构建，以及批次决策、快照、回执和指标的记录。 |
+| [maps_demo/presets.py](maps_demo/presets.py) | 固定场景的生成、分块回放存储与加载。 |
 | [maps_demo/capa.py](maps_demo/capa.py)、[maps_demo/ramcom.py](maps_demo/ramcom.py) | 本地释放与跨平台算法适配。 |
 | [maps_demo/geography.py](maps_demo/geography.py)、[maps_demo/figures.py](maps_demo/figures.py) | 处理后的路网与站点图层、地图回放和图表。 |
 | [mpcs/core/Framework.py](mpcs/core/Framework.py) | 共享时钟、任务分配、移动与结算。 |

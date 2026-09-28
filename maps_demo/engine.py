@@ -446,6 +446,20 @@ def _trace_for_frame(trace: dict[str, Any], result: Any) -> dict[str, Any]:
     return details
 
 
+def steps_from_frame(frame: dict[str, Any]) -> list[dict[str, Any]]:
+    """Rebuild the five display stages from one recorded decision batch."""
+    return [{
+        "index": (frame["batch"] - 1) * len(STAGES) + index,
+        "batch": frame["batch"], "stage": stage,
+        "decision_time_s": frame["decision_time_s"], "time_s": frame["time_s"],
+        "state": frame["after"] if stage == "settlement" else frame["before"],
+        "batch_parcels": frame["batch_parcels"],
+        "thresholds": frame["thresholds"], "decisions": frame["decisions"],
+        "details": frame["details"],
+        "metrics": frame["record"] if stage == "settlement" else frame["prior_metrics"],
+    } for index, stage in enumerate(STAGES)]
+
+
 def _catalog(prepared: Any, primary: str) -> dict[str, dict[str, Any]]:
     catalog = {}
     for platform_id, dataset in prepared.task_partition.datasets.items():
@@ -483,7 +497,7 @@ class _DemoStageReporter:
         self.notify(min(60, self.completed * 10), labels.get(stage_id, stage_id) + " complete")
 
 
-def run_demo(settings: dict[str, Any], progress=None) -> dict[str, Any]:
+def run_demo(settings: dict[str, Any], progress=None, batch_sink=None) -> dict[str, Any]:
     """Compute one selected episode and serialize its actual process."""
     config = build_config(settings)
     primary = settings.get("primary_platform", config.platform_ids[0])
@@ -618,6 +632,7 @@ def run_demo(settings: dict[str, Any], progress=None) -> dict[str, Any]:
                 trace["local_options"].extend(algorithm.last_candidate_pairs)
                 thresholds[primary] = (algorithm.last_threshold
                                        if isfinite(algorithm.last_threshold) else None)
+                no_local_checks = dict(algorithm.last_no_local_checks)
             elif policy == "ramcom":
                 thresholds[primary] = ramcom.threshold
             result = environment.step(actions)
@@ -625,6 +640,9 @@ def run_demo(settings: dict[str, Any], progress=None) -> dict[str, Any]:
             metrics = environment.metrics
             details = {pid: value for pid, value in _trace_for_frame(trace, result).items()
                        if pid in catalog}
+            if policy == "rl-capa":
+                for parcel_id, checks in no_local_checks.items():
+                    details.setdefault(parcel_id, {})["no_local_checks"] = checks
             for platform_result in result.platform_results.values():
                 for receipt in platform_result.serving_assignment_receipts:
                     for parcel_id, item in details.items():
@@ -683,32 +701,31 @@ def run_demo(settings: dict[str, Any], progress=None) -> dict[str, Any]:
                 "ledger_breakdown_by_platform": breakdowns,
             }
             batches.append(record)
-            for stage in STAGES:
-                steps.append({
-                    "index": len(steps), "batch": batch, "stage": stage,
-                    "decision_time_s": decision_time, "time_s": record["time_s"],
-                    "state": after if stage == "settlement" else before,
-                    "batch_parcels": [pid for pid in batch_parcels if catalog[pid]["origin"] == primary],
-                    "thresholds": thresholds,
-                    "decisions": decisions,
-                    "details": details,
-                    "metrics": record if stage == "settlement" else (batches[-2] if len(batches) > 1 else {
-                        **record, "assigned": 0, "expired": 0, "collected": 0,
-                        "unloaded": 0, "local_count": 0, "cross_count": 0,
-                        "profit": 0.0, "profit_by_platform": {primary: 0.0},
-                            "platform_archive": {p: {
-                                "local_profit": 0.0, "cross_profit": 0.0, "dropoff_profit": 0.0,
-                            } for p in (primary,)},
-                    }),
-                })
+            prior_metrics = batches[-2] if len(batches) > 1 else {
+                **record, "assigned": 0, "expired": 0, "collected": 0,
+                "unloaded": 0, "local_count": 0, "cross_count": 0,
+                "profit": 0.0, "profit_by_platform": {primary: 0.0},
+                "platform_archive": {primary: {
+                    "local_profit": 0.0, "cross_profit": 0.0, "dropoff_profit": 0.0,
+                }},
+            }
+            frame = {
+                "batch": batch, "decision_time_s": decision_time,
+                "time_s": record["time_s"], "before": before, "after": after,
+                "batch_parcels": [pid for pid in batch_parcels if catalog[pid]["origin"] == primary],
+                "thresholds": thresholds, "decisions": decisions, "details": details,
+                "record": record, "prior_metrics": prior_metrics,
+            }
+            if batch_sink is None:
+                steps.extend(steps_from_frame(frame))
+            else:
+                batch_sink(frame)
             observations = result.next_platform_observations
             if progress:
                 progress(60 + 35 * min(batch, frame_total) / frame_total,
                          f"Simulating frame {batch} / {frame_total}")
         analysis_batches = [item for item in batches if item["decision_time_s"] < config.dataset.arrival_window_end_s]
         final = analysis_batches[-1]
-        analysis_step = next(step for step in reversed(steps)
-                             if step["stage"] == "settlement" and step["batch"] == final["batch"])
         if progress:
             progress(98, "Preparing replay")
         return {
@@ -730,7 +747,7 @@ def run_demo(settings: dict[str, Any], progress=None) -> dict[str, Any]:
                 "bpt_s": sum(item["bpt_s"] for item in analysis_batches if item["has_target_batch"])
                          / max(1, sum(item["has_target_batch"] for item in analysis_batches)),
                 "ledger_breakdown": final["ledger_breakdown_by_platform"],
-                "flow_step_index": analysis_step["index"],
+                "flow_step_index": final["batch"] * len(STAGES) - 1,
             },
         }
     finally:

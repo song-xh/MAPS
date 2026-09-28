@@ -25,6 +25,7 @@ from maps_demo.figures import (
     profit_figure,
     status_figure,
 )
+from maps_demo.presets import PRESETS, load_preset
 
 REPLAY_PATH = Path("output/maps-demo/latest.json")
 _ACTIVE_RUN: dict[str, Any] | None = None
@@ -151,7 +152,20 @@ def _simulation_page() -> html.Div:
                       html.H2("Configure a cooperative assignment run")]),
             html.Div(id="dirty-note", className="dirty-note"),
         ]),
-        html.Div(className="simulation-grid", children=[
+        _card("Scenario source", _field("Mode", _select("scenario-mode", [
+            ("Custom simulation", "custom"), ("Precomputed preset", "preset"),
+        ], "custom")), "A / SOURCE"),
+        html.Div(id="preset-controls", style={"display": "none"}, children=[
+            _card("Precomputed comparison", html.Div(children=[
+                _field("City and arrival window", _select("preset-choice", [
+                    (spec["label"], name) for name, spec in PRESETS.items()
+                ], "chengdu")),
+                html.Div(id="preset-description", className="preset-description"),
+                html.Div(id="preset-workload", className="availability"),
+                html.Button("Load preset replay →", id="preset-load-button", className="button primary"),
+            ]), "B / FIXED SCENARIO"),
+        ]),
+        html.Div(id="simulation-grid", className="simulation-grid", children=[
             _card("Scenario & workload", html.Div(children=[
                 html.Div(className="field-grid", children=[
                 _field("Dataset", _select("dataset", [
@@ -177,7 +191,7 @@ def _simulation_page() -> html.Div:
                     html.Small("Distinct dates on the same city road network")]),
                 html.Div(id="source-controls", className="policy-grid"),
                 html.Div(id="availability", className="availability"),
-            ]), "A / INPUT"),
+            ]), "B / INPUT"),
             _card("Target algorithm", html.Div(children=[
                 html.Div(className="field-grid", children=[
                     _field("Run mode", _select("run-mode", [("Single algorithm", "single"),
@@ -201,9 +215,9 @@ def _simulation_page() -> html.Div:
                         _field("Cooperation sharing rate", _number("sharing", 0.3, minimum=0.01, maximum=1, step=0.01)),
                     ]),
                 ]),
-            ]), "B / METHOD"),
+            ]), "C / METHOD"),
         ]),
-        html.Div(className="run-bar", children=[
+        html.Div(id="custom-run-bar", className="run-bar", children=[
             html.Div([html.Span("RUN A SCENARIO", className="eyebrow")]),
             html.Div(className="button-row", children=[
                 html.Button("Run simulation →", id="run-button", className="button primary"),
@@ -247,7 +261,14 @@ def _inspection_page() -> html.Div:
                 }),
                 html.Div(id="map-caption", className="figure-caption"),
             ]), "SPATIAL VIEW", "map-card"),
-            _card("Batch decision trace", html.Div(id="parcel-details", className="parcel-details"),
+            _card("Batch decision trace", html.Div(children=[
+                html.Div(className="batch-pagination", children=[
+                    _field("Parcel page", dcc.Input(id="batch-page", type="number", min=1,
+                                                     step=1, value=1, className="input")),
+                    html.Span(id="batch-page-note"),
+                ]),
+                html.Div(id="parcel-details", className="parcel-details"),
+            ]),
                   "BATCH TRACE", "details-card"),
         ]),
         _card("Platform decision archive", html.Div(id="platform-details", className="platform-details"),
@@ -318,6 +339,41 @@ app.layout = html.Div(className="app-shell", children=[
 def show_section(section: str):
     return tuple({} if section == name else {"display": "none"}
                  for name in ("simulation", "inspection", "analysis"))
+
+
+@app.callback(
+    Output("preset-controls", "style"), Output("simulation-grid", "style"),
+    Output("custom-run-bar", "style"),
+    Input("scenario-mode", "value"),
+)
+def scenario_controls(mode: str):
+    return ({}, {"display": "none"}, {"display": "none"}) if mode == "preset" else (
+        {"display": "none"}, {}, {},
+    )
+
+
+@app.callback(
+    Output("preset-description", "children"), Output("preset-workload", "children"),
+    Input("preset-choice", "value"), Input("run-store", "data"),
+)
+def preset_description(name: str, reference: dict | None):
+    spec = PRESETS[name]
+    description = html.P(
+        f"Four platforms · P1 target · {spec['vehicles']} couriers per platform · "
+        "all eligible pickup and dropoff orders · 20 s batches · 720 s pickup deadline · "
+        "six algorithm comparison. Settings are fixed.",
+    )
+    result = _get_result(reference)
+    if not result or result["settings"].get("preset") != name:
+        return description, html.Small("Load the preset to view its eligible order counts.")
+    counts = result["counts"]
+    return description, html.Div(children=[
+        html.Strong(f"Eligible orders in {spec['start']}–{spec['end']}"),
+        _table(["Platform", "Pickup", "Dropoff"], [
+            [platform, value["pickup"], value["dropoff"]]
+            for platform, value in counts.items()
+        ]),
+    ])
 
 
 @app.callback(
@@ -443,7 +499,9 @@ def _run_worker(job: dict[str, Any], settings: dict[str, Any]) -> None:
     Output("run-progress", "value"), Output("run-poll", "disabled"),
     Output("run-button", "disabled"), Output("load-button", "disabled"),
     Input("run-button", "n_clicks"), Input("load-button", "n_clicks"),
+    Input("preset-load-button", "n_clicks"),
     Input("run-poll", "n_intervals"),
+    State("scenario-mode", "value"), State("preset-choice", "value"),
     State("dataset", "value"), State("platforms", "value"), State("seed", "value"),
     State("pickup-mode", "value"), State("pickups", "value"),
     State("dropoff-mode", "value"), State("dropoffs", "value"),
@@ -457,7 +515,8 @@ def _run_worker(job: dict[str, Any], settings: dict[str, Any]) -> None:
     State("focus-platform", "value"),
     prevent_initial_call=True,
 )
-def run_or_load(_run, _load, _poll, dataset, platforms, seed, pickup_mode, pickups,
+def run_or_load(_run, _load, _preset_load, _poll, scenario_mode, preset_choice,
+                dataset, platforms, seed, pickup_mode, pickups,
                 dropoff_mode, dropoffs, split, window_start, window_end, source_ids,
                 source_values, vehicles, step_size, radius, deadline, sharing,
                 mode, algorithm, comparison_algorithms, primary_platform):
@@ -476,6 +535,14 @@ def run_or_load(_run, _load, _poll, dataset, platforms, seed, pickup_mode, picku
                 100, True, False, False)
     if _RUN_JOB is not None:
         return no_update, "A simulation is already running.", no_update, False, True, True
+    if trigger == "preset-load-button":
+        try:
+            result = load_preset(preset_choice)
+            return (_cache_run(result), html.Span(
+                f"Loaded {PRESETS[preset_choice]['label']} comparison replay.",
+                className="status-success"), 100, True, False, False)
+        except (OSError, ValueError, KeyError) as error:
+            return no_update, html.Span(f"Preset load failed: {error}", className="status-error"), 0, True, False, False
     if trigger == "load-button":
         try:
             result = json.loads(REPLAY_PATH.read_text(encoding="utf-8"))
@@ -488,6 +555,8 @@ def run_or_load(_run, _load, _poll, dataset, platforms, seed, pickup_mode, picku
         except (OSError, ValueError) as error:
             return no_update, html.Span(f"Replay load failed: {error}", className="status-error"), 0, True, False, False
     try:
+        if scenario_mode != "custom":
+            raise ValueError("Select Custom simulation to run new settings")
         settings = _settings(dataset, platforms, seed, pickup_mode, pickups,
                              dropoff_mode, dropoffs, split, window_start, window_end,
                              source_ids, source_values, vehicles, step_size, radius,
@@ -505,7 +574,8 @@ def run_or_load(_run, _load, _poll, dataset, platforms, seed, pickup_mode, picku
 
 @app.callback(
     Output("dirty-note", "children"),
-    Input("run-store", "data"), Input("dataset", "value"), Input("platforms", "value"),
+    Input("run-store", "data"), Input("scenario-mode", "value"),
+    Input("preset-choice", "value"), Input("dataset", "value"), Input("platforms", "value"),
     Input("seed", "value"), Input("pickup-mode", "value"), Input("pickups", "value"),
     Input("dropoff-mode", "value"), Input("dropoffs", "value"),
     Input("split", "value"), Input("window-start", "value"), Input("window-end", "value"),
@@ -516,7 +586,8 @@ def run_or_load(_run, _load, _poll, dataset, platforms, seed, pickup_mode, picku
     Input("sharing", "value"), Input("run-mode", "value"), Input("algorithm", "value"),
     Input("comparison-algorithms", "value"), Input("focus-platform", "value"),
 )
-def config_notice(reference: dict | None, dataset: str, platforms: int, seed: int,
+def config_notice(reference: dict | None, scenario_mode: str, preset_choice: str,
+                  dataset: str, platforms: int, seed: int,
                   pickup_mode: str, pickups: int, dropoff_mode: str, dropoffs: int,
                   split: str, window_start: str, window_end: str,
                   source_ids: list[dict], source_values: list[str],
@@ -524,6 +595,9 @@ def config_notice(reference: dict | None, dataset: str, platforms: int, seed: in
                   sharing: float, mode: str, algorithm: str,
                   comparison_algorithms: list[str], primary_platform: str):
     result = _get_result(reference)
+    if scenario_mode == "preset":
+        return ("Preset replay loaded" if result and result["settings"].get("preset") == preset_choice
+                else "Ready to load preset")
     if not result:
         return "Ready to run"
     try:
@@ -585,6 +659,24 @@ def timeline_max(reference: dict | None, algorithm: str | None):
     return max(0, len(run["steps"]) - 1) if run else 0
 
 
+@app.callback(Output("batch-page", "value"),
+              Input("timeline", "value"), Input("inspection-algorithm", "value"))
+def reset_batch_page(_index: int | None, _algorithm: str | None):
+    return 1
+
+
+@app.callback(Output("batch-page", "max"), Output("batch-page-note", "children"),
+              Input("run-store", "data"), Input("timeline", "value"),
+              Input("inspection-algorithm", "value"))
+def batch_pages(reference: dict | None, index: int | None, algorithm: str | None):
+    run = _get_run(reference, algorithm)
+    if not run:
+        return 1, ""
+    step = run["steps"][max(0, min(int(index or 0), len(run["steps"]) - 1))]
+    count = (len(step["batch_parcels"]) + 24) // 25
+    return max(1, count), f"25 parcels per page · {len(step['batch_parcels']):,} in batch"
+
+
 @app.callback(
     Output("play-state", "data"), Input("play-button", "n_clicks"),
     Input("reset-button", "n_clicks"), Input("run-store", "data"),
@@ -644,16 +736,24 @@ def _stage_strip(stage: str, batch: int) -> list[html.Div]:
             for index, (number, english, description) in enumerate(STAGE_LABELS.values())]
 
 
-def _batch_detail(run: dict[str, Any], index: int) -> Any:
+def _batch_detail(run: dict[str, Any], index: int, page: int = 1) -> Any:
     step = run["steps"][index]
     stage_index = STAGES.index(step["stage"])
     catalog = run["catalog"]
     batch_ids = step.get("batch_parcels", [])
     if not batch_ids:
         return html.P("No pickup parcels await a decision in this batch.", className="muted")
+    page_count = (len(batch_ids) + 24) // 25
+    page = max(1, min(int(page or 1), page_count))
+    displayed_ids = batch_ids[(page - 1) * 25:page * 25]
     rows = []
-    local_count = cross_count = released_count = 0
-    for parcel_id in batch_ids:
+    local_count = sum(bool(step["details"].get(parcel_id, {}).get("local_matches"))
+                      for parcel_id in batch_ids) if stage_index >= 2 else 0
+    cross_count = sum(bool(step["details"].get(parcel_id, {}).get("awards"))
+                      for parcel_id in batch_ids) if stage_index >= 3 else 0
+    released_count = sum(step["decisions"].get(parcel_id) == "RELEASE"
+                         for parcel_id in batch_ids)
+    for parcel_id in displayed_ids:
         parcel = catalog[parcel_id]
         state = step["state"]["parcels"][parcel_id]
         detail = step["details"].get(parcel_id, {})
@@ -661,13 +761,12 @@ def _batch_detail(run: dict[str, Any], index: int) -> Any:
         local = (detail.get("local_matches") or [None])[0] if stage_index >= 2 else None
         award = (detail.get("awards") or [None])[0] if stage_index >= 3 else None
         serving = detail.get("serving_receipt") if stage_index >= 4 else None
-        if local:
-            local_count += 1
-        if award:
-            cross_count += 1
-        if action == "RELEASE":
-            released_count += 1
+        no_local_checks = detail.get("no_local_checks")
         local_text = (f"{courier_label(local['vehicle_id'])} · {local['extra_km']:.2f} km" if local
+                      else f"Waiting for feasible courier · {no_local_checks}/10"
+                      if action == "WAIT" and no_local_checks and stage_index >= 2
+                      else "Released after 10 checks"
+                      if action == "RELEASE" and no_local_checks == 10 and stage_index >= 2
                       else "Released" if action == "RELEASE" and stage_index >= 2
                       else "No feasible match" if stage_index >= 2 else "—")
         cross_text = (f"{award['winner']} / {courier_label(serving['vehicle_id']) if serving else 'Courier pending'}"
@@ -684,7 +783,7 @@ def _batch_detail(run: dict[str, Any], index: int) -> Any:
         html.Div(className="parcel-title", children=[
             html.Div([html.Span("CURRENT FRAME", className="eyebrow"),
                       html.H3(f"Batch {step['batch']} · {clock_time(step['decision_time_s'])}")]),
-            html.Span(f"{len(batch_ids)} parcels", className="status-badge"),
+            html.Span(f"{len(batch_ids)} parcels · page {page}/{page_count}", className="status-badge"),
         ]),
         html.Div(className="workload-chips", children=[
             html.Span(f"{len(batch_ids)} pending in batch"),
@@ -698,7 +797,7 @@ def _batch_detail(run: dict[str, Any], index: int) -> Any:
     ]
     if stage_index >= 2:
         candidate_rows = []
-        for parcel_id in batch_ids:
+        for parcel_id in displayed_ids:
             detail = step["details"].get(parcel_id, {})
             selected = {match["vehicle_id"] for match in detail.get("local_matches", [])}
             for option in detail.get("local_options", []):
@@ -726,7 +825,7 @@ def _batch_detail(run: dict[str, Any], index: int) -> Any:
         ]))
     if stage_index >= 3:
         auctions = []
-        for parcel_id in batch_ids:
+        for parcel_id in displayed_ids:
             detail = step["details"].get(parcel_id, {})
             if step["decisions"].get(parcel_id) != "RELEASE" and not detail.get("valid_bids"):
                 continue
@@ -779,7 +878,7 @@ def _batch_detail(run: dict[str, Any], index: int) -> Any:
                                    className="muted"))
     if stage_index >= 4:
         settlements = []
-        for parcel_id in batch_ids:
+        for parcel_id in displayed_ids:
             detail = step["details"].get(parcel_id, {})
             receipt = detail.get("origin_receipt")
             if receipt:
@@ -805,10 +904,10 @@ def _batch_detail(run: dict[str, Any], index: int) -> Any:
     Output("map-caption", "children"),
     Input("run-store", "data"), Input("timeline", "value"),
     Input("inspection-algorithm", "value"),
-    Input("map-layers", "value"),
+    Input("map-layers", "value"), Input("batch-page", "value"),
 )
 def render_inspection(reference: dict | None, index: int | None, algorithm: str | None,
-                      layers: list[str] | None):
+                      layers: list[str] | None, batch_page: int | None):
     run = _get_run(reference, algorithm)
     if not run:
         return (map_figure(None, 0, None, None), [], [],
@@ -876,7 +975,7 @@ def render_inspection(reference: dict | None, index: int | None, algorithm: str 
             map_view["data"][first_dynamic + position] = trace.to_plotly_json()
     return (
         map_view, cards, _stage_strip(step["stage"], step["batch"]),
-        _batch_detail(run, index), platform_cards,
+        _batch_detail(run, index, batch_page or 1), platform_cards,
         f"Frame {step['batch']} · {stage[1]} · {index + 1}/{len(run['steps'])}",
         "Loaded replay" if run["meta"]["source"] == "replay" else "Computed run · stage replay",
         caption,
@@ -962,9 +1061,15 @@ def render_analysis(reference: dict | None):
 )
 def download_replay(_clicks: int, reference: dict | None):
     result = _get_result(reference)
-    if not result:
+    if not result or result["settings"].get("preset"):
         return no_update
     return dcc.send_string(json.dumps(result, ensure_ascii=False), "maps-replay.json")
+
+
+@app.callback(Output("download-button", "style"), Input("run-store", "data"))
+def download_visibility(reference: dict | None):
+    result = _get_result(reference)
+    return {"display": "none"} if result and result["settings"].get("preset") else {}
 
 
 def main() -> None:

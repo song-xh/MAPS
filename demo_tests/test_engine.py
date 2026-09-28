@@ -6,8 +6,9 @@ from types import SimpleNamespace
 import networkx as nx
 
 from maps_demo.capa import CAPAAuctioneer
-from maps_demo.engine import _vehicle_display, build_config, run_comparison, run_demo, source_options
+from maps_demo.engine import POLICIES, _vehicle_display, build_config, run_comparison, run_demo, source_options
 from maps_demo.figures import map_dynamic_traces, minute_profit_figure
+from maps_demo.presets import PresetSteps, _FrameWriter, _write_gzip, load_preset
 from maps_demo.ramcom import RamCOMAuctioneer
 from mpcs.core.RoadNetwork import RoadNetwork
 
@@ -157,3 +158,58 @@ def test_dapa_rejects_bids_above_primary_payment_limit():
     quality = SimpleNamespace(scores_by_platform_id={"P2": 0.5})
     assert auction.settle((lot,), (intent,), quality) == ()
     assert auction.last_bids[0]["valid"] is False
+
+
+def test_rl_capa_waits_for_ten_consecutive_batches_without_a_feasible_local_match():
+    selected = settings()
+    selected.update(step_size_s=20, deadline_s=240, service_radius_km=0.0001)
+    run = run_demo(selected)
+    histories = {}
+    for step in run["steps"]:
+        if step["stage"] == "parcel":
+            for parcel_id, action in step["decisions"].items():
+                histories.setdefault(parcel_id, []).append((
+                    action, step["details"].get(parcel_id, {}).get("no_local_checks"),
+                ))
+    ten_checks = [history for history in histories.values()
+                  if len(history) >= 10 and history[9][1] == 10]
+    assert ten_checks
+    assert any(history[:10] == [("WAIT", index) for index in range(1, 10)]
+               + [("RELEASE", 10)] for history in ten_checks)
+
+
+def test_preset_chunks_restore_all_display_stages(tmp_path):
+    writer = _FrameWriter(tmp_path, "rl-capa")
+    run = run_demo(settings(), batch_sink=writer.append)
+    writer.flush()
+    steps = PresetSteps(tmp_path, writer.files, writer.frame_count)
+    assert run["steps"] == []
+    assert len(steps) == 5 * len(run["batches"])
+    assert [steps[index]["stage"] for index in range(5)] == [
+        "workload", "parcel", "local", "auction", "settlement",
+    ]
+    assert steps[-1]["metrics"] == run["batches"][-1]
+    assert steps[run["summary"]["flow_step_index"]]["batch"] == run["summary"]["batch"]
+
+
+def test_preset_manifest_loads_comparison_and_selected_stage(tmp_path):
+    directory = tmp_path / "fixture"
+    writer = _FrameWriter(directory, "rl-capa")
+    run = run_demo(settings(), batch_sink=writer.append)
+    writer.flush()
+    _write_gzip(directory / "shared.json.gz", {
+        "catalog": run["catalog"], "geography": run["geography"],
+    })
+    _write_gzip(directory / "manifest.json.gz", {
+        "settings": {"preset": "fixture"}, "counts": {"P1": {"pickup": 10, "dropoff": 0}},
+        "runs": {name: {
+            "meta": {**run["meta"], "algorithm": name}, "batches": run["batches"],
+            "summary": run["summary"], "frame_count": writer.frame_count,
+            "files": writer.files,
+        } for name in POLICIES},
+    })
+    loaded = load_preset("fixture", tmp_path)
+    assert list(loaded["runs"]) == list(POLICIES)
+    assert loaded["runs"]["rl-capa"]["steps"][4]["stage"] == "settlement"
+    assert loaded["runs"]["mra"]["meta"]["source"] == "replay"
+    assert loaded["catalog"] == run["catalog"]

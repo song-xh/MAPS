@@ -27,10 +27,17 @@ button, input { font: inherit; }
 .page { display: block; }
 #simulation-page, #inspection-page { display: flex; flex-direction: column; }
 #simulation-page .page-intro, #inspection-page .page-intro { order: 0; }
+#simulation-page > .card { order: 1; margin-bottom: 14px; }
+#simulation-page > .card .field { max-width: 310px; }
+#simulation-page #preset-controls { order: 2; }
 #simulation-page .run-bar { order: 1; margin-top: 0; }
-#simulation-page .run-progress-wrap { order: 2; }
-#simulation-page #simulation-result { order: 3; }
-#simulation-page .simulation-grid { order: 4; margin-top: 12px; }
+#simulation-page .run-progress-wrap { order: 3; }
+#simulation-page #simulation-result { order: 4; }
+#simulation-page .simulation-grid { order: 5; margin-top: 12px; }
+.preset-description { color: #526884; font-size: 12px; line-height: 1.65; margin: 13px 0; }
+.preset-description p { margin: 0; }
+#preset-controls .card { max-width: 760px; }
+#preset-controls .button { margin-top: 15px; }
 #inspection-page .playback-card { order: 1; margin: 0 0 18px; }
 #inspection-page .platform-card { order: 2; margin: 0 0 18px; }
 #inspection-page #current-metrics { order: 3; }
@@ -118,6 +125,8 @@ button, input { font: inherit; }
 .platform-stat-grid .metric { min-height: 76px; padding: 10px 12px; background: #f7faff; }
 .platform-stat-grid .metric-value { font-size: 19px; }
 .details-card .field { margin-bottom: 15px; }
+.batch-pagination { display: flex; align-items: end; gap: 12px; margin-bottom: 12px; color: #6d8097; font-size: 11px; }
+.batch-pagination .field { width: 115px; margin-bottom: 0; }
 .parcel-details { padding-right: 5px; }
 .batch-table-wrap { max-height: 360px; overflow: auto; margin-top: 12px; border: 1px solid #e5ecf4; border-radius: 8px; }
 .batch-table-wrap .data-table { min-width: 900px; }

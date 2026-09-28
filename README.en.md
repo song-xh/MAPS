@@ -14,7 +14,7 @@ MAPS draws on the manuscript *Auction-Aware Crowdsourced Parcel Assignment for C
 | DLAM and DAPA | The dual-layer auction first selects a courier within each cooperating platform through a first-price sealed auction, then selects a platform and payment through a reverse Vickrey auction. |
 | RL-CAPA | Two learned policies adapt assignment over time: the first chooses a batch duration; the second decides for each parcel whether to defer it to the next batch or send it to the auction pool. The paper studies this adaptive method alongside CAPA using revenue, completion rate, and batch processing time. |
 
-The **RL-CAPA** selection in MAPS runs the current MPCS CAMA/DAPA assignment path at the frame interval chosen in Simulation. Inspection displays the local candidates, threshold, partner bids, winning assignment, and settlement recorded by that run.
+The **RL-CAPA** selection in MAPS runs the current MPCS CAMA/DAPA assignment path at the frame interval chosen in Simulation. A parcel with no feasible local courier waits for up to ten consecutive batches and enters the auction on the tenth failed check. Inspection displays the wait count, local candidates, threshold, partner bids, winning assignment, and settlement recorded by that run.
 
 ## System demonstration
 
@@ -29,11 +29,11 @@ flowchart LR
 
 | Module | Visitor actions and visible results |
 | --- | --- |
-| **Simulation** | Select a dataset and split, arrival window, distinct same-city order dates for platforms, pickup/dropoff sample size or all eligible orders, courier count, service radius, deadline, frame interval, seed, target platform, and one or more algorithms. Run the scenario and watch its progress and target-platform summary. |
+| **Simulation** | Configure a custom run or load a precomputed Chengdu or Shanghai comparison. Custom controls cover dataset and split, arrival window, distinct same-city order dates, pickup/dropoff count or all eligible orders, courier count, service radius, deadline, frame interval, seed, target platform, and algorithms. Watch simulation progress and target-platform results. |
 | **Inspection** | Select an algorithm and play or step through batches and the five process stages. Inspect parcel status, local candidates, partner bids, payment, and the target platform's decision archive. Pan and zoom the full processed road network with stations, moving couriers and their routes, unmatched target parcels, and matching links. |
-| **Analysis** | Compare target-platform OP, AR, BPT, local/cross assignments, cumulative and per-minute ledger profit, and the target-to-serving-platform flow. Download the replay. |
+| **Analysis** | Compare target-platform OP, AR, BPT, local/cross assignments, cumulative and per-minute ledger profit, and the target-to-serving-platform flow. Download custom-run replays. |
 
-The selected target platform makes the compared decisions for its own parcels. Partner platforms first process their own work locally, then offer feasible remaining courier capacity. Comparison runs use the same sampled orders, initial courier fleet, and seed. Platform colors distinguish couriers; the target platform is highlighted. The map shows no region polygons.
+The selected target platform makes the compared decisions for its own parcels. Comparison runs use the same orders, initial courier fleet, and seed. Platform colors distinguish couriers; the target platform is highlighted. The map shows no region polygons.
 
 ## Install and launch
 
@@ -53,6 +53,8 @@ Open **http://127.0.0.1:8050**. The default `Synthetic` dataset needs no externa
 3. In **Analysis**, read the target platform's assignment and profit measures. The per-minute line shows ledger increments; the cumulative line shows their running total.
 4. Return to **Simulation**, choose **Compare algorithms**, select at least two of `RL-CAPA`, `ImpGTA`, `MRA`, `Greedy`, `RamCOM`, and `LocalSum`, and run again. Switch **Displayed algorithm** in Inspection, compare results in Analysis, and use **Download replay JSON** to save the run.
 
+For a prepared city comparison, select **Precomputed preset** under **Scenario source**, choose Chengdu or Shanghai, and click **Load preset replay**. The preset fixes P1 as the target, four platforms, all eligible orders in the arrival window, a 20-second batch interval, and all six algorithms. Chengdu uses 08:00–09:00 and 300 couriers per platform; Shanghai uses 09:00–10:00 and 100 couriers per platform. Both use a 720-second pickup deadline. Inspection and Analysis use the saved process and results without rerunning the simulator.
+
 Changing a control after a run does not update the displayed replay; click **Run simulation** to apply the new settings.
 
 ### Real-city data
@@ -65,6 +67,14 @@ python -m mpcs.utils.DataUtils `
   --output-root dataset/Didichuxing/Chengdu/parcel_v2 `
   --seed 20250308
 ```
+
+Generate the fixed city replays after preparing both datasets:
+
+```powershell
+python -m maps_demo.presets all
+```
+
+The generator saves complete stage, map, auction, ledger, and comparison data under `output/presets/`, one batch chunk at a time. It can resume after a completed algorithm. The generated files are local and excluded from Git; copy them with the project or regenerate them on another machine. Both presets use distinct `Test` order dates for P1–P4.
 
 For a real-city run, choose a distinct order date for every platform from the same city. The availability table counts parsed, deduplicated orders inside the operational area and selected arrival window. Choose a numeric sample or **All eligible** separately for pickups and dropoffs. `Train`, `Validation`, and `Test` are selectable; platform dates supply the files for the selected split. Real-city presets have fixed platform counts; Synthetic supports 2–16 platforms.
 
@@ -79,7 +89,7 @@ For a real-city run, choose a distinct order date for every platform from the sa
 
 The simulator continues through outstanding pickup deadlines, but Analysis ends at the selected arrival-window boundary. For `10:00–11:00`, charts and summary metrics use frames before `11:00`; later frames remain available in Inspection. A comparison is one matched-seed scenario, so repeat it with other seeds before drawing general performance conclusions.
 
-The most recent run is saved to `output/maps-demo/latest.json`. **Load last replay** opens it without rerunning the simulator; **Download replay JSON** exports the current run. A comparison replay stores a shared road layer and parcel catalog with separate traces and summaries for each algorithm.
+The most recent custom run is saved to `output/maps-demo/latest.json`. **Load last replay** opens it without rerunning the simulator; **Download replay JSON** exports that run. Fixed presets store a shared road layer and parcel catalog, per-algorithm summaries, and compressed batch chunks under `output/presets/`; Inspection reads only the selected chunk.
 
 ## Code and research CLI
 
@@ -87,6 +97,7 @@ The most recent run is saved to `output/maps-demo/latest.json`. **Load last repl
 | --- | --- |
 | [maps_demo/app.py](maps_demo/app.py) | Dash controls, progress, playback, and analysis. |
 | [maps_demo/engine.py](maps_demo/engine.py) | Scenario setup and recorded batch decisions, snapshots, receipts, and metrics. |
+| [maps_demo/presets.py](maps_demo/presets.py) | Fixed scenario generation, chunked replay storage, and loading. |
 | [maps_demo/capa.py](maps_demo/capa.py), [maps_demo/ramcom.py](maps_demo/ramcom.py) | Local release and cross-platform method adapters. |
 | [maps_demo/geography.py](maps_demo/geography.py), [maps_demo/figures.py](maps_demo/figures.py) | Processed road and station layers, map replay, and charts. |
 | [mpcs/core/Framework.py](mpcs/core/Framework.py) | Shared clock, assignment, movement, and settlement. |
