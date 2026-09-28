@@ -740,7 +740,8 @@ def _batch_detail(run: dict[str, Any], index: int, page: int = 1) -> Any:
     step = run["steps"][index]
     stage_index = STAGES.index(step["stage"])
     catalog = run["catalog"]
-    batch_ids = step.get("batch_parcels", [])
+    batch_ids = sorted(step.get("batch_parcels", []),
+                       key=lambda parcel_id: parcel_id not in step["decisions"])
     if not batch_ids:
         return html.P("No pickup parcels await a decision in this batch.", className="muted")
     page_count = (len(batch_ids) + 24) // 25

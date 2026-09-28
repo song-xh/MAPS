@@ -30,7 +30,7 @@ flowchart LR
 | Module | Visitor actions and visible results |
 | --- | --- |
 | **Simulation** | Configure a custom run or load a precomputed Chengdu or Shanghai comparison. Custom controls cover dataset and split, arrival window, distinct same-city order dates, pickup/dropoff count or all eligible orders, courier count, service radius, deadline, frame interval, seed, target platform, and algorithms. Watch simulation progress and target-platform results. |
-| **Inspection** | Select an algorithm and play or step through batches and the five process stages. Inspect parcel status, local candidates, partner bids, payment, and the target platform's decision archive. Pan and zoom the full processed road network with stations, moving couriers and their routes, unmatched target parcels, and matching links. |
+| **Inspection** | Select an algorithm and play or step through batches and the five process stages. Page through large batches to inspect parcel status, local candidates, partner bids, payment, and the target platform's decision archive. Pan and zoom the full processed road network with stations, moving couriers and their routes, unmatched target parcels, and matching links. |
 | **Analysis** | Compare target-platform OP, AR, BPT, local/cross assignments, cumulative and per-minute ledger profit, and the target-to-serving-platform flow. Download custom-run replays. |
 
 The selected target platform makes the compared decisions for its own parcels. Comparison runs use the same orders, initial courier fleet, and seed. Platform colors distinguish couriers; the target platform is highlighted. The map shows no region polygons.
