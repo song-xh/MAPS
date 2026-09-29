@@ -63,7 +63,7 @@ STAGE_LABELS = {
 }
 POLICY_LABELS = {
     "rl-capa": "RL-CAPA", "impgta": "ImpGTA", "mra": "MRA",
-    "greedy": "Greedy", "ramcom": "RamCOM", "localsum": "LocalSum",
+    "greedy": "Greedy", "ramcom": "RamCOM",
 }
 STATUS_LABELS = {
     "future": "Not arrived", "waiting": "Pending", "public_this_step": "Released this frame",
@@ -362,7 +362,7 @@ def preset_description(name: str, reference: dict | None):
     description = html.P(
         f"Four platforms · P1 target · {spec['vehicles']} couriers per platform · "
         "all eligible pickup and dropoff orders · 20 s batches · 720 s pickup deadline · "
-        "six algorithm comparison. Settings are fixed.",
+        "five algorithm comparison. Settings are fixed.",
     )
     result = _get_result(reference)
     if not result or result["settings"].get("preset") != name:
@@ -755,6 +755,10 @@ def _batch_detail(run: dict[str, Any], index: int, page: int = 1) -> Any:
                       for parcel_id in batch_ids) if stage_index >= 3 else 0
     released_count = sum(step["decisions"].get(parcel_id) == "RELEASE"
                          for parcel_id in batch_ids)
+    retry_count = sum(
+        step["state"]["parcels"][parcel_id]["status"] == "cross_pool"
+        for parcel_id in batch_ids
+    ) if stage_index >= 3 else 0
     for parcel_id in displayed_ids:
         parcel = catalog[parcel_id]
         state = step["state"]["parcels"][parcel_id]
@@ -775,13 +779,16 @@ def _batch_detail(run: dict[str, Any], index: int, page: int = 1) -> Any:
                       else "Released" if action == "RELEASE" and stage_index >= 2
                       else "No feasible match" if stage_index >= 2 else "—")
         cross_text = (f"{award['winner']} / {courier_label(serving['vehicle_id']) if serving else 'Courier pending'}"
-                      if award else "No valid bid" if action == "RELEASE" and stage_index >= 3
+                      if award else "No valid bid" if detail.get("platform_bids") and stage_index >= 3
+                      else "No partner quote" if stage_index >= 3 and
+                      (action == "RELEASE" or state["status"] == "cross_pool")
                       else "—")
         rows.append([
             html.Div([html.Strong(parcel["label"]), html.Code(parcel_id, title=parcel_id)]),
             parcel["origin"],
             STATUS_LABELS.get(state["status"], state["status"]),
-            action if stage_index >= 1 and action else "—",
+            action if stage_index >= 1 and action else
+            "Auction retry" if stage_index >= 3 and state["status"] == "cross_pool" else "—",
             local_text, cross_text,
         ])
     sections = [
@@ -794,6 +801,7 @@ def _batch_detail(run: dict[str, Any], index: int, page: int = 1) -> Any:
             html.Span(f"{len(batch_ids)} pending in batch"),
             html.Span(f"{local_count} local matches"),
             html.Span(f"{released_count} released"),
+            html.Span(f"{retry_count} auction retries") if stage_index >= 3 else None,
             html.Span(f"{cross_count} cross awards"),
         ]),
         html.Div(className="batch-table-wrap", children=_table(
@@ -828,13 +836,14 @@ def _batch_detail(run: dict[str, Any], index: int, page: int = 1) -> Any:
             html.Div(className="batch-table-wrap", children=_table(
                 ["Parcel", "Candidate courier", "Extra distance", "ETA", "Revenue / threshold", "Result"],
                 candidate_rows,
-            )) if candidate_rows else html.P("No feasible local candidates in this batch.", className="muted"),
+            )) if candidate_rows else html.P("No feasible local candidates on this page.", className="muted"),
         ]))
     if stage_index >= 3:
         auctions = []
         for parcel_id in displayed_ids:
             detail = step["details"].get(parcel_id, {})
-            if step["decisions"].get(parcel_id) != "RELEASE" and not detail.get("valid_bids"):
+            if (step["decisions"].get(parcel_id) != "RELEASE"
+                    and step["state"]["parcels"][parcel_id]["status"] != "cross_pool"):
                 continue
             bids = sorted(detail.get("platform_bids") or detail.get("valid_bids", []),
                           key=lambda item: item["amount"])
@@ -875,7 +884,7 @@ def _batch_detail(run: dict[str, Any], index: int, page: int = 1) -> Any:
                         "Winner" if award and award["winner"] == bid["platform"] else
                         "Accepted" if run["meta"]["mechanism"] == "ramcom" else "Valid bid"]
                      for bid in bids],
-                ) if bids else html.P("No valid partner bid.", className="muted"),
+                ) if bids else html.P("No eligible partner quote.", className="muted"),
                 html.Div(
                     f"Selected {award['winner']} · payment {award['payment']:.3f} "
                     f"· {award['valid_bidder_count']} eligible partners" if run["meta"]["mechanism"] == "ramcom"
@@ -897,7 +906,7 @@ def _batch_detail(run: dict[str, Any], index: int, page: int = 1) -> Any:
                    "With two or more valid bids, payment is the second-lowest bid.",
                    className="hint-line") if run["meta"]["mechanism"] == "paper" else None,
             *auctions,
-        ]) if auctions else html.P("No released parcels entered the auction in this batch.",
+        ]) if auctions else html.P("No auction attempts on this page.",
                                    className="muted"))
     if stage_index >= 4:
         settlements = []

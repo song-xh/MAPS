@@ -14,7 +14,7 @@ MAPS draws on the manuscript *Auction-Aware Crowdsourced Parcel Assignment for C
 | DLAM and DAPA | The dual-layer auction first selects a courier within each cooperating platform through a first-price sealed auction, then selects a platform and payment through a reverse Vickrey auction. |
 | RL-CAPA | Two learned policies adapt assignment over time: the first chooses a batch duration; the second decides for each parcel whether to defer it to the next batch or send it to the auction pool. The paper studies this adaptive method alongside CAPA using revenue, completion rate, and batch processing time. |
 
-The **RL-CAPA** selection in MAPS runs the current MPCS CAMA/DAPA assignment path at the frame interval chosen in Simulation. Each batch prioritizes higher-revenue parcels and retries feasible couriers when the preferred courier conflicts with another assignment; parcels below the dynamic threshold enter the auction directly. A parcel with no feasible local courier waits for up to six consecutive batches and enters the auction on the sixth failed check. Each partner submits its lowest feasible internal courier bid. The target selects the lowest valid platform bid and pays the smaller of the DAPA second price and its sharing-rate portion of the fare. Inspection displays the wait count, local candidates, internal courier bids, platform bids, winning assignment, and settlement recorded by that run.
+The **RL-CAPA** selection in MAPS runs the current MPCS CAMA/DAPA assignment path at the frame interval chosen in Simulation. Each batch considers higher-revenue parcels first and selects the feasible courier insertion with the least additional route distance, updating that courier's route before considering the next parcel. A courier may receive multiple parcels when each insertion remains feasible. Parcels below the dynamic threshold enter the auction directly. A parcel with no feasible local courier waits for up to six consecutive batches and enters the auction on the sixth failed check. Each partner submits its lowest feasible internal courier bid. The target selects the lowest valid platform bid and pays the smaller of the DAPA second price and its sharing-rate portion of the fare. Unmatched cross-pool parcels are offered again every batch until assignment or expiry. Inspection displays the wait count, local candidates, auction attempts, internal courier bids, platform bids, winning assignment, and settlement recorded by that run.
 
 ## System demonstration
 
@@ -51,9 +51,9 @@ Open **http://127.0.0.1:8050**. The default `Synthetic` dataset needs no externa
 1. In **Simulation**, keep `Synthetic`, `Test`, target platform `P1`, and seed `11`. Set **Pickup sample** to `Count`, **Pickups per platform** to `10`, **Dropoffs per platform** to `0`, **Couriers per platform** to `2`, and the arrival window to `00:00–00:01`. Select **RL-CAPA** and click **Run simulation**. This configuration produces cross-platform matches.
 2. In **Inspection**, use the timeline arrows or **Play** to advance through **Workload**, **Parcel**, **Local decision**, **Auction**, and **Settlement**. Inspect a released parcel's local candidates, partner bids, winner, payment, and courier route.
 3. In **Analysis**, read the target platform's assignment and profit measures. The per-minute line shows ledger increments; the cumulative line shows their running total.
-4. Return to **Simulation**, choose **Compare algorithms**, select at least two of `RL-CAPA`, `ImpGTA`, `MRA`, `Greedy`, `RamCOM`, and `LocalSum`, and run again. Switch **Displayed algorithm** in Inspection, compare results in Analysis, and use **Download replay JSON** to save the run.
+4. Return to **Simulation**, choose **Compare algorithms**, select at least two of `RL-CAPA`, `ImpGTA`, `MRA`, `Greedy`, and `RamCOM`, and run again. Switch **Displayed algorithm** in Inspection, compare results in Analysis, and use **Download replay JSON** to save the run.
 
-For a prepared city comparison, select **Precomputed preset** under **Scenario source**, choose Chengdu or Shanghai, and click **Load preset replay**. The preset fixes P1 as the target, four platforms, all eligible orders in the arrival window, a 20-second batch interval, and all six algorithms. Chengdu uses 08:00–09:00 and 300 couriers per platform; Shanghai uses 09:00–10:00 and 100 couriers per platform. Both use a 720-second pickup deadline. Inspection and Analysis use the saved process and results without rerunning the simulator.
+For a prepared city comparison, select **Precomputed preset** under **Scenario source**, choose Chengdu or Shanghai, and click **Load preset replay**. The preset fixes P1 as the target, four platforms, all eligible orders in the arrival window, a 20-second batch interval, and all five algorithms. Chengdu uses 08:00–09:00 and 300 couriers per platform; Shanghai uses 09:00–10:00 and 100 couriers per platform. Both use a 720-second pickup deadline. Inspection and Analysis use the saved process and results without rerunning the simulator.
 
 Changing a control after a run does not update the displayed replay; click **Run simulation** to apply the new settings.
 
@@ -109,7 +109,7 @@ The research CLI also provides dataset and algorithm listings, baseline runs, mi
 python -m mpcs datasets
 python -m mpcs algorithms
 python -m mpcs run --dataset synthetic --split test `
-  --methods localsum mra --output output/synthetic-baselines
+  --methods mra impgta --output output/synthetic-baselines
 ```
 
 See the [architecture](docs/architecture.md) and [extension guide](docs/extending.md) for the backend and plugin interfaces.

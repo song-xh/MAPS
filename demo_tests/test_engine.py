@@ -66,7 +66,7 @@ def test_rl_capa_target_only_map():
 
 def test_comparison_runs_all_algorithms_on_same_target_workload():
     selected = settings()
-    selected["algorithms"] = ["rl-capa", "impgta", "mra", "greedy", "ramcom", "localsum"]
+    selected["algorithms"] = ["rl-capa", "impgta", "mra", "greedy", "ramcom"]
     result = run_comparison(selected)
     assert list(result["runs"]) == selected["algorithms"]
     assert len(result["catalog"]) == 10

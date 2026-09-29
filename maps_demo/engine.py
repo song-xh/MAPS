@@ -30,7 +30,7 @@ from mpcs.experiments.Presets import dataset_preset
 from mpcs.experiments.Runner import builtin_algorithms, builtin_cross_mechanisms
 
 STAGES = ("workload", "parcel", "local", "auction", "settlement")
-POLICIES = ("rl-capa", "impgta", "mra", "greedy", "ramcom", "localsum")
+POLICIES = ("rl-capa", "impgta", "mra", "greedy", "ramcom")
 
 
 def clock_time(seconds: int | float) -> str:
@@ -352,6 +352,10 @@ class _RecordingSanitizer:
         descriptors = self.delegate.sanitize(view)
         if descriptors:
             self.trace["tokens"][descriptors[0].parcel_token] = view.parcels[0].parcel_id
+            self.trace["auction_attempts"].append({
+                "token": descriptors[0].parcel_token,
+                "platform": view.platform_id,
+            })
         return descriptors
 
 
@@ -421,7 +425,8 @@ class _RecordingAuctioneer:
 
 def _empty_trace() -> dict[str, Any]:
     return {
-        "local_options": [], "local_matches": [], "courier_bids": [], "tokens": {},
+        "local_options": [], "local_matches": [], "auction_attempts": [],
+        "courier_bids": [], "tokens": {},
         "intent_candidates": [], "platform_bids": [], "valid_bids": [], "awards": [],
         "timing_s": {"local": 0.0, "auction": 0.0}, "primary": "",
     }
@@ -430,7 +435,7 @@ def _empty_trace() -> dict[str, Any]:
 def _trace_for_frame(trace: dict[str, Any], result: Any) -> dict[str, Any]:
     tokens = trace["tokens"]
     details: dict[str, dict[str, Any]] = {}
-    for name in ("local_options", "local_matches", "courier_bids", "intent_candidates", "platform_bids", "valid_bids", "awards"):
+    for name in ("local_options", "local_matches", "auction_attempts", "courier_bids", "intent_candidates", "platform_bids", "valid_bids", "awards"):
         for entry in trace[name]:
             parcel_id = entry.get("parcel_id") or tokens.get(entry.get("token"))
             if parcel_id is None:
@@ -526,7 +531,7 @@ def run_demo(settings: dict[str, Any], progress=None, batch_sink=None) -> dict[s
         geography = prepared_geography(prepared)
         session = None
         registry = builtin_algorithms()
-        if policy in {"rl-capa", "impgta", "mra", "localsum"}:
+        if policy in {"rl-capa", "impgta", "mra"}:
             session = registry.create_pool_policy(policy, config, prepared, seed)
         elif policy == "greedy":
             greedy = GreedyParcelPolicy(
@@ -539,7 +544,7 @@ def run_demo(settings: dict[str, Any], progress=None, batch_sink=None) -> dict[s
                                  (item["fare"] for item in catalog.values() if item["origin"] == primary), seed)
         trace = _empty_trace()
         trace["primary"] = primary
-        if policy in {"impgta", "mra", "localsum"}:
+        if policy in {"impgta", "mra"}:
             kwargs = dict(build_baseline_components(policy, config, prepared, random_seed=seed).environment_kwargs())
         else:
             kwargs = dict(builtin_cross_mechanisms()["paper"](config, prepared, seed))
@@ -744,8 +749,7 @@ def run_demo(settings: dict[str, Any], progress=None, batch_sink=None) -> dict[s
                 "platforms": list(config.platform_ids), "algorithm": policy,
                 "matcher": policy if session is not None else "greedy" if policy == "greedy" else "ramcom",
                 "mechanism": ("dapa" if capa else "ramcom" if policy == "ramcom" else
-                              "pool-random-fixed" if policy in {"mra", "impgta"} else
-                              "regional-fixed" if policy == "localsum" else "paper"),
+                              "pool-random-fixed" if policy in {"mra", "impgta"} else "paper"),
                 "primary_platform": primary,
                 "settings": settings, "source": "computed",
             },

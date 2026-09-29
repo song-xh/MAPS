@@ -41,10 +41,11 @@ def main() -> None:
                 raise ValueError(f"{city} preset settings changed")
             shared = _read_gzip(directory / "shared.json.gz")
             for algorithm, folder in ALGORITHMS.items():
-                previous = manifest["runs"][algorithm]
-                if previous["files"][0].startswith(f"{folder}/"):
+                previous = manifest["runs"].get(algorithm)
+                if previous is not None and previous["files"][0].startswith(f"{folder}/"):
                     completed.append(f"{city}/{algorithm}")
                     continue
+                reference = next(iter(manifest["runs"].values()))
                 writer = _FrameWriter(directory, folder)
                 last_percent = -1
 
@@ -64,16 +65,21 @@ def main() -> None:
                 writer.flush()
                 if run["catalog"] != shared["catalog"] or run["geography"] != shared["geography"]:
                     raise ValueError(f"{city}/{algorithm} changed the comparison scenario")
-                if writer.frame_count != previous["frame_count"]:
+                if writer.frame_count != reference["frame_count"]:
                     raise ValueError(f"{city}/{algorithm} changed the batch count")
                 initial = _read_gzip(directory / writer.files[0])[0]["before"]
-                earlier = _read_gzip(directory / previous["files"][0])[0]["before"]
+                earlier = _read_gzip(directory / reference["files"][0])[0]["before"]
                 if initial != earlier:
                     raise ValueError(f"{city}/{algorithm} changed the initial world")
                 manifest["runs"][algorithm] = {
                     "meta": run["meta"], "batches": run["batches"],
                     "summary": run["summary"], "frame_count": writer.frame_count,
                     "files": writer.files,
+                }
+                manifest["runs"] = {
+                    name: manifest["runs"][name]
+                    for name in manifest["settings"]["algorithms"]
+                    if name in manifest["runs"]
                 }
                 _write_gzip(manifest_path, manifest)
                 completed.append(f"{city}/{algorithm}")

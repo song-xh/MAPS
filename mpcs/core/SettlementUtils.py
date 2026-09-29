@@ -1592,7 +1592,7 @@ def _cross_commit_token(intent_token: str) -> str:
 def _local_proposal_priority(
     world: SettlementWorldState,
     proposal: LocalAssignmentProposal,
-) -> tuple[int, int, int, str, str, str]:
+) -> tuple[int, int, int, int, str, str, str]:
     parcel = world.parcels_by_id.get(proposal.parcel_id)
     if (
         parcel is None
@@ -1603,12 +1603,14 @@ def _local_proposal_priority(
             1,
             0,
             0,
+            0,
             proposal.parcel_id,
             proposal.proposal_token,
             proposal.vehicle_id,
         )
     return (
         0,
+        proposal.insertion.base_route_version,
         parcel.deadline_s,
         parcel.arrival_time_s,
         parcel.parcel_id,

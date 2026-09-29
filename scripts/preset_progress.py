@@ -16,7 +16,8 @@ def main() -> None:
         path = PRESET_ROOT / city / "manifest.json.gz"
         if path.exists():
             with gzip.open(path, "rt", encoding="utf-8") as stream:
-                finished = list(json.load(stream)["runs"])
+                saved = json.load(stream)["runs"]
+                finished = [name for name in POLICIES if name in saved]
         else:
             finished = []
         active = next((name for name in POLICIES if name not in finished), None)

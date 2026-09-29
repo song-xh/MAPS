@@ -14,7 +14,7 @@ MAPS 依托 Guanglei Zhu 等人的研究手稿 *Auction-Aware Crowdsourced Parce
 | DLAM 与 DAPA | 双层竞价首先通过第一价格密封竞价在各合作平台内部选择配送员，再通过平台间的逆向维克里竞价确定服务平台和支付额。 |
 | RL-CAPA | 两个学习策略自适应地调整分配过程：第一阶段选择批次时长，第二阶段逐包裹决定延后至下一批还是进入竞价池。论文以收益、完成率和批次处理时间研究该自适应方法及 CAPA。 |
 
-MAPS 中的 **RL-CAPA** 选项按照 Simulation 中选择的帧间隔运行当前 MPCS 的 CAMA/DAPA 分配流程。每批优先处理高收益包裹，首选配送员冲突时重新选择可行配送员；低于动态阈值的包裹直接进入竞价池。没有可行本地配送员的包裹最多等待连续六个批次，在第六次检查仍不可行时进入竞价池。每个合作平台提交内部可行配送员的最低报价。目标平台选择有效平台报价中的最低者，支付 DAPA 次低价与包裹运费分享额中的较小值。Inspection 展示等待次数、本地候选、内部配送员报价、平台报价、获胜分配和结算结果。
+MAPS 中的 **RL-CAPA** 选项按照 Simulation 中选择的帧间隔运行当前 MPCS 的 CAMA/DAPA 分配流程。每批优先处理高收益包裹，选择新增路线距离最短的可行配送员插入方案，并在处理下一个包裹前更新路线。只要每次插入仍可行，同一配送员就可以在批次内接收多个包裹。低于动态阈值的包裹直接进入竞价池。没有可行本地配送员的包裹最多等待连续六个批次，在第六次检查仍不可行时进入竞价池。每个合作平台提交内部可行配送员的最低报价。目标平台选择有效平台报价中的最低者，支付 DAPA 次低价与包裹运费分享额中的较小值。跨平台池中未匹配的包裹每批重新竞价，直到匹配或失效。Inspection 展示等待次数、本地候选、竞价尝试、内部配送员报价、平台报价、获胜分配和结算结果。
 
 ## 系统演示
 
@@ -51,9 +51,9 @@ python -m maps_demo.app
 1. 在 **Simulation** 中保留 `Synthetic`、`Test`、目标平台 `P1` 和随机种子 `11`。将 **Pickup sample** 设为 `Count`、**Pickups per platform** 设为 `10`、**Dropoffs per platform** 设为 `0`、**Couriers per platform** 设为 `2`、到达时间窗设为 `00:00–00:01`。选择 **RL-CAPA** 并点击 **Run simulation**。该配置会产生跨平台匹配。
 2. 在 **Inspection** 中使用时间线箭头或 **Play**，依次查看 **Workload**、**Parcel**、**Local decision**、**Auction** 和 **Settlement**。检查被释放包裹的本地候选、合作平台报价、获胜者、支付额和配送员路线。
 3. 在 **Analysis** 中查看目标平台的分配与收益指标。逐分钟折线表示账本增量，累计折线表示其运行总额。
-4. 返回 **Simulation**，选择 **Compare algorithms**，从 `RL-CAPA`、`ImpGTA`、`MRA`、`Greedy`、`RamCOM` 和 `LocalSum` 中至少选择两个算法并重新运行。在 Inspection 中切换 **Displayed algorithm**，在 Analysis 中比较结果，再使用 **Download replay JSON** 保存运行产物。
+4. 返回 **Simulation**，选择 **Compare algorithms**，从 `RL-CAPA`、`ImpGTA`、`MRA`、`Greedy` 和 `RamCOM` 中至少选择两个算法并重新运行。在 Inspection 中切换 **Displayed algorithm**，在 Analysis 中比较结果，再使用 **Download replay JSON** 保存运行产物。
 
-若要查看预先计算的城市对比，在 **Scenario source** 中选择 **Precomputed preset**，选择成都或上海，再点击 **Load preset replay**。预设固定以 P1 为目标平台，包含四个平台、时间窗内全部有效订单、20 秒批次间隔和六种算法。成都使用 08:00–09:00、每平台 300 名配送员；上海使用 09:00–10:00、每平台 100 名配送员。两者的取件期限均为 720 秒。Inspection 和 Analysis 直接使用保存的过程及结果，不会重新仿真。
+若要查看预先计算的城市对比，在 **Scenario source** 中选择 **Precomputed preset**，选择成都或上海，再点击 **Load preset replay**。预设固定以 P1 为目标平台，包含四个平台、时间窗内全部有效订单、20 秒批次间隔和五种算法。成都使用 08:00–09:00、每平台 300 名配送员；上海使用 09:00–10:00、每平台 100 名配送员。两者的取件期限均为 720 秒。Inspection 和 Analysis 直接使用保存的过程及结果，不会重新仿真。
 
 运行后修改控件不会更新当前回放；点击 **Run simulation** 才会应用新设置。
 
@@ -109,7 +109,7 @@ python -m maps_demo.presets all
 python -m mpcs datasets
 python -m mpcs algorithms
 python -m mpcs run --dataset synthetic --split test `
-  --methods localsum mra --output output/synthetic-baselines
+  --methods mra impgta --output output/synthetic-baselines
 ```
 
 后端与插件接口见[架构文档](docs/architecture.md)和[扩展指南](docs/extending.md)。
