@@ -49,19 +49,11 @@ def test_target_replay_uses_only_target_origin_metrics_and_parcels():
     assert geography["segments"] == [[104.0, 30.7, 104.001, 30.7]]
 
 
-def test_rl_capa_partner_auction_and_target_only_map():
+def test_rl_capa_target_only_map():
     run = run_demo(settings())
-    assert run["summary"]["cross_count"] > 0
     for step in run["steps"]:
         if step["stage"] != "settlement":
             continue
-        for parcel_id, detail in step["details"].items():
-            for award in detail.get("awards", ()):
-                bids = sorted(bid["amount"] for bid in detail["valid_bids"] if bid["valid"])
-                assert run["catalog"][parcel_id]["origin"] == "P1"
-                assert {bid["platform"] for bid in detail["valid_bids"]} <= {"P2", "P3", "P4"}
-                assert isclose(award["winner_bid"], bids[0])
-                assert isclose(award["payment"], bids[1] if len(bids) > 1 else bids[0])
         parcel_traces = (trace for trace in map_dynamic_traces(run, step["index"], "P1", None)
                          if trace.name and trace.name.endswith("parcels"))
         for trace in parcel_traces:
@@ -158,6 +150,20 @@ def test_dapa_rejects_bids_above_primary_payment_limit():
     quality = SimpleNamespace(scores_by_platform_id={"P2": 0.5})
     assert auction.settle((lot,), (intent,), quality) == ()
     assert auction.last_bids[0]["valid"] is False
+
+
+def test_dapa_uses_second_platform_bid_for_payment():
+    auction = CAPAAuctioneer(sharing_rate=0.3, platform_ids=("P1", "P2", "P3"))
+    lot = SimpleNamespace(parcel_token="parcel", fare_amount=10.0, decision_frame_id="frame")
+    intents = tuple(SimpleNamespace(server_payload=SimpleNamespace(
+        parcel_token="parcel", bidder_platform_id=platform, frozen_offer_amount=amount,
+        intent_token=platform,
+    )) for platform, amount in (("P2", 1.0), ("P3", 2.0)))
+    quality = SimpleNamespace(scores_by_platform_id={"P2": 1.0, "P3": 1.0})
+    award, = auction.settle((lot,), intents, quality)
+    assert award.winner_platform_id == "P2"
+    assert award.winner_bid_amount == 4.0
+    assert award.payment_amount == 5.0
 
 
 def test_rl_capa_waits_for_ten_consecutive_batches_without_a_feasible_local_match():

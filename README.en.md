@@ -10,11 +10,11 @@ MAPS draws on the manuscript *Auction-Aware Crowdsourced Parcel Assignment for C
 
 | Research component | Method described in the manuscript |
 | --- | --- |
-| CAPA and CAMA | CAPA processes arriving parcels in batches. CAMA evaluates feasible local courier–parcel pairs using remaining capacity and route detour, applies a dynamic utility threshold, and sends parcels not assigned locally to the auction pool. |
+| CAPA and CAMA | CAPA processes arriving parcels in batches. CAMA evaluates feasible local courier–parcel pairs using remaining capacity and route detour, applies a dynamic revenue threshold, and sends parcels not assigned locally to the auction pool. |
 | DLAM and DAPA | The dual-layer auction first selects a courier within each cooperating platform through a first-price sealed auction, then selects a platform and payment through a reverse Vickrey auction. |
 | RL-CAPA | Two learned policies adapt assignment over time: the first chooses a batch duration; the second decides for each parcel whether to defer it to the next batch or send it to the auction pool. The paper studies this adaptive method alongside CAPA using revenue, completion rate, and batch processing time. |
 
-The **RL-CAPA** selection in MAPS runs the current MPCS CAMA/DAPA assignment path at the frame interval chosen in Simulation. A parcel with no feasible local courier waits for up to ten consecutive batches and enters the auction on the tenth failed check. Inspection displays the wait count, local candidates, threshold, partner bids, winning assignment, and settlement recorded by that run.
+The **RL-CAPA** selection in MAPS runs the current MPCS CAMA/DAPA assignment path at the frame interval chosen in Simulation. Each batch prioritizes higher-revenue parcels and retries feasible couriers when the preferred courier conflicts with another assignment; parcels below the dynamic threshold enter the auction directly. A parcel with no feasible local courier waits for up to ten consecutive batches and enters the auction on the tenth failed check. Inspection displays the wait count, local candidates, threshold, partner bids, winning assignment, and settlement recorded by that run.
 
 ## System demonstration
 

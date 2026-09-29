@@ -74,6 +74,7 @@ class _LocalAlgorithm(LocalSumRule, RLCAPARule, MRARule, IMPGTARule, FedLTDRule)
         "_threshold_count",
         "last_threshold",
         "last_candidate_pairs",
+        "last_wait_ids",
         "no_local_streak",
         "last_no_local_checks",
         "_fare_by_parcel",
@@ -102,6 +103,7 @@ class _LocalAlgorithm(LocalSumRule, RLCAPARule, MRARule, IMPGTARule, FedLTDRule)
         self._threshold_count = 0
         self.last_threshold = float("inf")
         self.last_candidate_pairs = ()
+        self.last_wait_ids: frozenset[str] = frozenset()
         self.no_local_streak: dict[str, int] = {}
         self.last_no_local_checks: dict[str, int] = {}
         self._fare_by_parcel: dict[str, float] = {}
@@ -159,15 +161,14 @@ class _LocalAlgorithm(LocalSumRule, RLCAPARule, MRARule, IMPGTARule, FedLTDRule)
         }
         self.last_no_local_checks = {}
         if self.method is BaselineMethod.RL_CAPA:
-            feasible_ids = {pair["parcel_id"] for pair in self.last_candidate_pairs}
             for request in requests:
                 parcel_id = request.parcel_id
-                if parcel_id in feasible_ids:
-                    self.no_local_streak.pop(parcel_id, None)
-                else:
+                if parcel_id in self.last_wait_ids:
                     checks = self.no_local_streak.get(parcel_id, 0) + 1
                     self.no_local_streak[parcel_id] = checks
                     self.last_no_local_checks[parcel_id] = checks
+                else:
+                    self.no_local_streak.pop(parcel_id, None)
         unmatched_action = (
             ParcelAction.WAIT
             if self.method is BaselineMethod.LOCALSUM

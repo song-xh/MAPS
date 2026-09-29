@@ -764,6 +764,9 @@ def _batch_detail(run: dict[str, Any], index: int, page: int = 1) -> Any:
         serving = detail.get("serving_receipt") if stage_index >= 4 else None
         no_local_checks = detail.get("no_local_checks")
         local_text = (f"{courier_label(local['vehicle_id'])} · {local['extra_km']:.2f} km" if local
+                      else f"No courier remained after batch allocation · {no_local_checks}/10"
+                      if action == "WAIT" and no_local_checks and detail.get("local_options")
+                      and stage_index >= 2
                       else f"Waiting for feasible courier · {no_local_checks}/10"
                       if action == "WAIT" and no_local_checks and stage_index >= 2
                       else "Released after 10 checks"
@@ -807,6 +810,8 @@ def _batch_detail(run: dict[str, Any], index: int, page: int = 1) -> Any:
                 decision = ("Matched" if option["vehicle_id"] in selected else
                             "Below threshold" if revenue is not None and threshold is not None
                             and revenue < threshold else
+                            "Deferred after batch allocation" if step["decisions"].get(parcel_id) == "WAIT"
+                            and detail.get("no_local_checks") else
                             "Released after batch planning" if step["decisions"].get(parcel_id) == "RELEASE"
                             and revenue is not None else "Candidate")
                 candidate_rows.append([

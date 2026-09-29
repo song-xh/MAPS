@@ -12,7 +12,7 @@ The selected target platform alone runs the selected algorithm and may release i
 
 RL-CAPA uses its CAMA local policy and DAPA auction. ImpGTA, MRA and LocalSum use their existing MPCS pool policies, own local matchers and baseline cross components. Greedy uses the existing MPCS profit-aware decision policy and Greedy local matcher. RamCOM uses a sampled value threshold, random feasible local insertion, reservation-based expected-revenue payment and sampled partner acceptance. The MPCS auction accepts one bid per partner platform; RamCOM therefore sends its shortest-detour feasible courier as that platform's candidate.
 
-RL-CAPA defers a target parcel that has no feasible local route insertion for nine consecutive checks and releases it on the tenth. Finding a feasible local candidate clears this counter. Threshold rejection and resource competition retain their normal release decisions.
+RL-CAPA processes threshold-eligible parcels in descending local revenue score order. It uses each parcel's preferred courier when feasible and searches the remaining couriers after a batch conflict. A parcel with no feasible local courier after batch allocation waits for nine consecutive checks and releases on the tenth; a parcel below the dynamic threshold releases immediately, even when a local courier is feasible.
 
 Only target-origin parcels enter the batch trace, map parcel layer, assignment counts and cooperation flow. OP is the target ledger total at the arrival-window cutoff. AR is target assignments divided by target pickups. BPT averages target policy, local matching and auction time across nonempty target batches; physical movement is excluded. Partner courier positions and routes remain visible as resources.
 

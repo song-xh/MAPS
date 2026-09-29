@@ -177,9 +177,7 @@ class RLCAPARule:
                     )
                 ):
                     best_by_request[request.parcel_id] = (
-                        request,
-                        option,
-                        score,
+                        request, option, score,
                     )
         self._threshold_sum += float(sum(all_scores))
         self._threshold_count += len(all_scores)
@@ -193,30 +191,35 @@ class RLCAPARule:
         shadow = state
         shadow_vehicles_by_id = vehicles_by_id
         proposals: list[LocalAssignmentProposal] = []
-        for request in requests:
+        wait_ids: set[str] = set()
+        for request in sorted(
+            requests,
+            key=lambda item: (
+                -(1.0 - self.config.local_payment_ratio) * self._fare(item),
+                item.deadline_s, item.arrival_time_s, item.parcel_id,
+            ),
+        ):
             fixed = best_by_request.get(request.parcel_id)
             if fixed is None:
+                wait_ids.add(request.parcel_id)
                 continue
-            _, fixed_option, fixed_score = fixed
             if (1.0 - self.config.local_payment_ratio) * self._fare(request) < threshold:
                 continue
-            vehicle = shadow_vehicles_by_id.get(fixed_option.vehicle_id)
-            if vehicle is None:
-                continue
-            options = tuple(
-                option
-                for option in self._available_options(request, shadow, planning)
-                if option.vehicle_id == fixed_option.vehicle_id
-            )
+            options = self._available_options(request, shadow, planning)
             if not options:
+                wait_ids.add(request.parcel_id)
                 continue
+            preferred = tuple(
+                option for option in options
+                if option.vehicle_id == fixed[1].vehicle_id
+            )
             option = min(
-                options,
+                preferred or options,
                 key=lambda candidate: (
                     -self._capa_pair_utility(
                         request,
                         candidate,
-                        vehicle,
+                        shadow_vehicles_by_id[candidate.vehicle_id],
                         distance_cache,
                     ),
                     *_option_priority(candidate),
@@ -233,4 +236,5 @@ class RLCAPARule:
             )
             shadow = _shadow_after(shadow, option)
             shadow_vehicles_by_id = {item.vehicle_id: item for item in shadow.vehicles}
+        self.last_wait_ids = frozenset(wait_ids)
         return tuple(proposals)
