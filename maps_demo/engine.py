@@ -365,6 +365,8 @@ class _RecordingBidder:
         started = perf_counter()
         bundles = self.delegate.build_intents(snapshot, state)
         self.trace["timing_s"]["auction"] += perf_counter() - started
+        if hasattr(self.delegate, "last_courier_bids"):
+            self.trace["courier_bids"].extend(self.delegate.last_courier_bids)
         for bundle in bundles:
             self.trace["intent_candidates"].append({
                 "token": bundle.server_payload.parcel_token,
@@ -412,13 +414,14 @@ class _RecordingAuctioneer:
                 "winner_bid": float(award.winner_bid_amount),
                 "payment": float(award.payment_amount),
                 "valid_bidder_count": award.valid_bidder_count,
+                "pricing_rule": award.pricing_rule,
             })
         return awards
 
 
 def _empty_trace() -> dict[str, Any]:
     return {
-        "local_options": [], "local_matches": [], "tokens": {},
+        "local_options": [], "local_matches": [], "courier_bids": [], "tokens": {},
         "intent_candidates": [], "platform_bids": [], "valid_bids": [], "awards": [],
         "timing_s": {"local": 0.0, "auction": 0.0}, "primary": "",
     }
@@ -427,7 +430,7 @@ def _empty_trace() -> dict[str, Any]:
 def _trace_for_frame(trace: dict[str, Any], result: Any) -> dict[str, Any]:
     tokens = trace["tokens"]
     details: dict[str, dict[str, Any]] = {}
-    for name in ("local_options", "local_matches", "intent_candidates", "platform_bids", "valid_bids", "awards"):
+    for name in ("local_options", "local_matches", "courier_bids", "intent_candidates", "platform_bids", "valid_bids", "awards"):
         for entry in trace[name]:
             parcel_id = entry.get("parcel_id") or tokens.get(entry.get("token"))
             if parcel_id is None:
@@ -543,6 +546,8 @@ def run_demo(settings: dict[str, Any], progress=None, batch_sink=None) -> dict[s
         matchers = dict(build_local_matchers(config.platform_ids, "greedy"))
         if session is not None:
             matchers[primary] = session.local_matchers[primary]
+        elif policy == "greedy":
+            matchers[primary] = greedy
         elif policy == "ramcom":
             matchers[primary] = RamCOMLocalMatcher(primary, seed)
         kwargs["local_matchers"] = {
@@ -635,6 +640,8 @@ def run_demo(settings: dict[str, Any], progress=None, batch_sink=None) -> dict[s
                 thresholds[primary] = (algorithm.last_threshold
                                        if isfinite(algorithm.last_threshold) else None)
                 no_local_checks = dict(algorithm.last_no_local_checks)
+            elif policy == "greedy":
+                trace["local_options"].extend(greedy.last_candidate_pairs)
             elif policy == "ramcom":
                 thresholds[primary] = ramcom.threshold
             result = environment.step(actions)

@@ -27,8 +27,10 @@ from .Common import (
     _close,
     _option_priority,
     _proposal,
-    _shadow_after,
 )
+
+
+NO_LOCAL_WAIT_LIMIT = 6
 
 
 class RLCAPARule:
@@ -121,7 +123,7 @@ class RLCAPARule:
         vehicle: VehicleSnapshot,
         distance_cache: dict[tuple[str, str], float],
     ) -> float:
-        """Compute CAPA Eq.6 for one feasible EV-task pair."""
+        """Compute CAPA Eq.6 for one feasible courier-task pair."""
         capacity_ratio, detour_ratio = self._capa_pair_components(
             request,
             option,
@@ -143,6 +145,7 @@ class RLCAPARule:
         distance_cache: dict[tuple[str, str], float] = {}
         all_scores: list[float] = []
         pair_records: list[dict[str, float | str]] = []
+        options_by_request: dict[str, list[tuple[RouteInsertionOption, float]]] = {}
         best_by_request: dict[
             str,
             tuple[PickupPlanningRequest, RouteInsertionOption, float],
@@ -161,6 +164,7 @@ class RLCAPARule:
                     distance_cache,
                 )
                 all_scores.append((1.0 - self.config.local_payment_ratio) * self._fare(request))
+                options_by_request.setdefault(request.parcel_id, []).append((option, score))
                 pair_records.append({
                     "parcel_id": request.parcel_id, "vehicle_id": option.vehicle_id,
                     "utility": score, "revenue_score": all_scores[-1],
@@ -188,10 +192,9 @@ class RLCAPARule:
         )
         self.last_threshold = threshold
         self.last_candidate_pairs = tuple(pair_records)
-        shadow = state
-        shadow_vehicles_by_id = vehicles_by_id
         proposals: list[LocalAssignmentProposal] = []
         wait_ids: set[str] = set()
+        used_vehicle_ids: set[str] = set()
         for request in sorted(
             requests,
             key=lambda item: (
@@ -199,32 +202,29 @@ class RLCAPARule:
                 item.deadline_s, item.arrival_time_s, item.parcel_id,
             ),
         ):
+            revenue_score = (1.0 - self.config.local_payment_ratio) * self._fare(request)
+            if isfinite(threshold) and revenue_score < threshold:
+                continue
             fixed = best_by_request.get(request.parcel_id)
             if fixed is None:
                 wait_ids.add(request.parcel_id)
                 continue
-            if (1.0 - self.config.local_payment_ratio) * self._fare(request) < threshold:
-                continue
-            options = self._available_options(request, shadow, planning)
-            if not options:
+            if fixed[1].vehicle_id not in used_vehicle_ids:
+                option = fixed[1]
+            else:
+                remaining = (
+                    pair for pair in options_by_request[request.parcel_id]
+                    if pair[0].vehicle_id not in used_vehicle_ids
+                )
+                fallback = min(
+                    remaining,
+                    key=lambda pair: (-pair[1], *_option_priority(pair[0])),
+                    default=None,
+                )
+                option = None if fallback is None else fallback[0]
+            if option is None:
                 wait_ids.add(request.parcel_id)
                 continue
-            preferred = tuple(
-                option for option in options
-                if option.vehicle_id == fixed[1].vehicle_id
-            )
-            option = min(
-                preferred or options,
-                key=lambda candidate: (
-                    -self._capa_pair_utility(
-                        request,
-                        candidate,
-                        shadow_vehicles_by_id[candidate.vehicle_id],
-                        distance_cache,
-                    ),
-                    *_option_priority(candidate),
-                ),
-            )
             proposals.append(
                 _proposal(
                     frame=state.frame,
@@ -234,7 +234,6 @@ class RLCAPARule:
                     method=self.method,
                 )
             )
-            shadow = _shadow_after(shadow, option)
-            shadow_vehicles_by_id = {item.vehicle_id: item for item in shadow.vehicles}
+            used_vehicle_ids.add(option.vehicle_id)
         self.last_wait_ids = frozenset(wait_ids)
         return tuple(proposals)

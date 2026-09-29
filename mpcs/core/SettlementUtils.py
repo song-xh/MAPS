@@ -1427,7 +1427,7 @@ class SettlementEngine:
         award: OpaqueAuctionAward,
         extra_distance_km: float,
     ) -> CrossEconomicTerms:
-        """Bind a reverse-Vickrey award to frozen net utility terms."""
+        """Bind an auction award to frozen net utility terms."""
 
         fare_amount = parcel.fare_amount
         try:
@@ -1439,11 +1439,11 @@ class SettlementEngine:
                     self._reward_config.travel_cost_per_km,
                 ),
                 winner_bid_amount=award.winner_bid_amount,
-                contract_version="reverse-vickrey-v1",
+                contract_version=award.pricing_rule,
             )
         except ValueError as error:
             raise SettlementCommitError(
-                "cross award violates the reverse-Vickrey contract"
+                "cross award violates its pricing contract"
             ) from error
 
     @staticmethod

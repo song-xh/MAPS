@@ -163,10 +163,16 @@ def test_dapa_uses_second_platform_bid_for_payment():
     award, = auction.settle((lot,), intents, quality)
     assert award.winner_platform_id == "P2"
     assert award.winner_bid_amount == 4.0
-    assert award.payment_amount == 5.0
+    assert award.payment_amount == 3.0
+    assert award.pricing_rule == "capped-dapa-v1"
+
+    quality.scores_by_platform_id = {"P2": 0.0, "P3": 0.0}
+    award, = auction.settle((lot,), intents, quality)
+    assert award.winner_bid_amount == 1.0
+    assert award.payment_amount == 2.0
 
 
-def test_rl_capa_waits_for_ten_consecutive_batches_without_a_feasible_local_match():
+def test_rl_capa_releases_on_sixth_batch_without_a_feasible_local_match():
     selected = settings()
     selected.update(step_size_s=20, deadline_s=240, service_radius_km=0.0001)
     run = run_demo(selected)
@@ -177,11 +183,11 @@ def test_rl_capa_waits_for_ten_consecutive_batches_without_a_feasible_local_matc
                 histories.setdefault(parcel_id, []).append((
                     action, step["details"].get(parcel_id, {}).get("no_local_checks"),
                 ))
-    ten_checks = [history for history in histories.values()
-                  if len(history) >= 10 and history[9][1] == 10]
-    assert ten_checks
-    assert any(history[:10] == [("WAIT", index) for index in range(1, 10)]
-               + [("RELEASE", 10)] for history in ten_checks)
+    six_checks = [history for history in histories.values()
+                  if len(history) >= 6 and history[5][1] == 6]
+    assert six_checks
+    assert any(history[:6] == [("WAIT", index) for index in range(1, 6)]
+               + [("RELEASE", 6)] for history in six_checks)
 
 
 def test_preset_chunks_restore_all_display_stages(tmp_path):

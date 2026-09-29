@@ -11,7 +11,7 @@ from mpcs.core.Domain import (
 from mpcs.core.RouteUtils import RoutePlanningServiceImpl
 
 FIRST_LAYER_SHARE = 0.3
-PLATFORM_BASE_PRICE = 1.0
+COURIER_BASE_PAYMENT = 0.5
 COURIER_DETOUR_WEIGHT = 0.5
 COURIER_SERVICE_SCORE = 0.8
 
@@ -31,8 +31,9 @@ class CAPABidder:
         self.stations = stations
         self.sharing_rate = sharing_rate
         self.planner = RoutePlanningServiceImpl(platform_id, road)
+        self.last_courier_bids = []
 
-    def _detour_ratio(self, vehicle, request, option):
+    def _auction_detour_term(self, vehicle, request, option):
         route = [vehicle.current_road_node_id, *(stop.road_node_id for stop in vehicle.route_stops)]
         if not vehicle.route_stops or vehicle.route_stops[-1].stop_type is not StopType.STATION_RETURN:
             route.append(self.stations.nearest_station(route[-1]).road_node_id)
@@ -40,11 +41,13 @@ class CAPABidder:
         original = self.road.shortest_distance_m(start, end) / 1000.0
         detour = (self.road.shortest_distance_m(start, request.road_node_id)
                   + self.road.shortest_distance_m(request.road_node_id, end)) / 1000.0
-        return original / detour if detour > 0 else 1.0
+        local_ratio = original / detour if detour > 0 else 1.0
+        return 1.0 - local_ratio
 
     def build_intents(self, public_snapshot, own_planning_state):
         if self.platform_id == self.primary:
             return ()
+        self.last_courier_bids = []
         vehicles = {vehicle.vehicle_id: vehicle for vehicle in own_planning_state.vehicles}
         bundles = []
         for descriptor in public_snapshot.descriptors:
@@ -57,17 +60,33 @@ class CAPABidder:
                 road_node_id=parcel.road_node_id, arrival_time_s=parcel.arrival_time_s,
                 deadline_s=parcel.deadline_s, capacity_units=parcel.capacity_units,
             )
-            bids = []
+            best_by_courier = {}
             for option in self.planner.all_feasible_insertions(request, own_planning_state):
-                ratio = self._detour_ratio(vehicles[option.vehicle_id], request, option)
-                courier_bid = PLATFORM_BASE_PRICE + (
-                    COURIER_DETOUR_WEIGHT * ratio
+                detour_term = self._auction_detour_term(
+                    vehicles[option.vehicle_id], request, option)
+                candidate = (detour_term, option.extra_distance_km, option.insertion_index)
+                current = best_by_courier.get(option.vehicle_id)
+                if current is None or candidate < current[0]:
+                    best_by_courier[option.vehicle_id] = (candidate, option)
+            bids = []
+            for vehicle_id, (candidate, _option) in best_by_courier.items():
+                detour_term = candidate[0]
+                courier_bid = COURIER_BASE_PAYMENT + (
+                    COURIER_DETOUR_WEIGHT * detour_term
                     + (1.0 - COURIER_DETOUR_WEIGHT) * COURIER_SERVICE_SCORE
                 ) * self.sharing_rate * FIRST_LAYER_SHARE * parcel.fare_amount
-                bids.append((courier_bid, option.vehicle_id))
+                bids.append((courier_bid, vehicle_id, detour_term))
             if not bids:
                 continue
-            amount, vehicle_id = max(bids, key=lambda item: (item[0], item[1]))
+            amount, vehicle_id, _ = min(bids, key=lambda item: (item[0], item[1]))
+            self.last_courier_bids.extend({
+                "token": descriptor.parcel_token,
+                "platform": self.platform_id,
+                "vehicle_id": candidate_vehicle_id,
+                "amount": bid_amount,
+                "detour_term": candidate_detour,
+                "selected": candidate_vehicle_id == vehicle_id,
+            } for bid_amount, candidate_vehicle_id, candidate_detour in bids)
             token = f"capa:{descriptor.decision_frame_id}:{descriptor.parcel_token}:{self.platform_id}"
             bundles.append(CandidateIntentBundle(
                 server_payload=SealedBidIntent(
@@ -123,11 +142,13 @@ class CAPAAuctioneer:
             if not ranked:
                 continue
             winner_bid, winner = ranked[0]
-            payment = ranked[1][0] if len(ranked) > 1 else winner_bid
+            second_price = ranked[1][0] if len(ranked) > 1 else winner_bid
+            payment = min(self.sharing_rate * lot.fare_amount, second_price)
             awards.append(OpaqueAuctionAward(
                 parcel_token=lot.parcel_token, winner_intent_token=winner.intent_token,
                 winner_platform_id=winner.bidder_platform_id, payment_amount=payment,
                 winner_bid_amount=winner_bid, valid_bidder_count=len(ranked),
                 decision_frame_id=lot.decision_frame_id,
+                pricing_rule="capped-dapa-v1",
             ))
         return tuple(awards)

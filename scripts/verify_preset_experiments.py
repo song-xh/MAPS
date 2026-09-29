@@ -44,7 +44,7 @@ def verify() -> dict:
             assert run["summary"]["assigned"] == run["summary"]["local_count"] + run["summary"]["cross_count"]
             assert isclose(run["summary"]["profit"], run["summary"]["profit_by_platform"]["P1"])
             assert steps[run["summary"]["flow_step_index"]]["stage"] == "settlement"
-            bids = awards = tenth_releases = 0
+            bids = awards = sixth_releases = 0
             auction_step_index = None
             for index in range(0, len(steps), len(STAGES)):
                 first = steps[index]
@@ -59,7 +59,7 @@ def verify() -> dict:
                     awards += len(detail.get("awards", ()))
                     if detail.get("awards") and auction_step_index is None:
                         auction_step_index = index + 3
-                    tenth_releases += (detail.get("no_local_checks") == 10
+                    sixth_releases += (detail.get("no_local_checks") == 6
                                        and settled["decisions"].get(parcel_id) == "RELEASE")
             if name == "rl-capa":
                 assert bids > 0 and awards > 0
@@ -68,7 +68,7 @@ def verify() -> dict:
                 "frames": expected_frames, "target_pickups": run["summary"]["total"],
                 "assigned": run["summary"]["assigned"], "profit": run["summary"]["profit"],
                 "bid_records": bids, "awards": awards,
-                "tenth_check_releases": tenth_releases,
+                "sixth_check_releases": sixth_releases,
             }
         assert len(comparison_profit_figure(runs, per_minute=False).data) == len(POLICIES)
         assert len(comparison_profit_figure(runs, per_minute=True).data) == len(POLICIES)

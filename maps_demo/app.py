@@ -26,6 +26,7 @@ from maps_demo.figures import (
     status_figure,
 )
 from maps_demo.presets import PRESETS, load_preset
+from mpcs.algorithms.baseline.RLCAPA import NO_LOCAL_WAIT_LIMIT
 
 REPLAY_PATH = Path("output/maps-demo/latest.json")
 _ACTIVE_RUN: dict[str, Any] | None = None
@@ -764,13 +765,13 @@ def _batch_detail(run: dict[str, Any], index: int, page: int = 1) -> Any:
         serving = detail.get("serving_receipt") if stage_index >= 4 else None
         no_local_checks = detail.get("no_local_checks")
         local_text = (f"{courier_label(local['vehicle_id'])} · {local['extra_km']:.2f} km" if local
-                      else f"No courier remained after batch allocation · {no_local_checks}/10"
+                      else f"No courier remained after batch allocation · {no_local_checks}/{NO_LOCAL_WAIT_LIMIT}"
                       if action == "WAIT" and no_local_checks and detail.get("local_options")
                       and stage_index >= 2
-                      else f"Waiting for feasible courier · {no_local_checks}/10"
+                      else f"Waiting for feasible courier · {no_local_checks}/{NO_LOCAL_WAIT_LIMIT}"
                       if action == "WAIT" and no_local_checks and stage_index >= 2
-                      else "Released after 10 checks"
-                      if action == "RELEASE" and no_local_checks == 10 and stage_index >= 2
+                      else f"Released after {NO_LOCAL_WAIT_LIMIT} checks"
+                      if action == "RELEASE" and no_local_checks == NO_LOCAL_WAIT_LIMIT and stage_index >= 2
                       else "Released" if action == "RELEASE" and stage_index >= 2
                       else "No feasible match" if stage_index >= 2 else "—")
         cross_text = (f"{award['winner']} / {courier_label(serving['vehicle_id']) if serving else 'Courier pending'}"
@@ -839,6 +840,8 @@ def _batch_detail(run: dict[str, Any], index: int, page: int = 1) -> Any:
                           key=lambda item: item["amount"])
             award = (detail.get("awards") or [None])[0]
             candidates = detail.get("intent_candidates", [])
+            courier_bids = sorted(detail.get("courier_bids", []),
+                                  key=lambda item: (item["platform"], item["amount"], item["vehicle_id"]))
             auctions.append(html.Div(className="trace-section", children=[
                 html.Div(className="parcel-title", children=[
                     html.H4(catalog[parcel_id]["label"]),
@@ -848,6 +851,16 @@ def _batch_detail(run: dict[str, Any], index: int, page: int = 1) -> Any:
                     "; ".join(f"{item['platform']} → {', '.join(courier_label(vid) for vid in item['vehicle_ids'])}"
                               for item in candidates) if candidates else "none"
                 ), className="hint-line"),
+                html.Div([
+                    html.H5("Partner courier bids · FPSA"),
+                    html.Div(className="batch-table-wrap", children=_table(
+                        ["Partner", "Courier", "Courier bid", "Detour term", "Internal result"],
+                        [[item["platform"], courier_label(item["vehicle_id"]),
+                          f"{item['amount']:.3f}", f"{item['detour_term']:.3f}",
+                          "Selected" if item["selected"] else "Outbid"]
+                         for item in courier_bids],
+                    )),
+                ]) if courier_bids and run["meta"]["mechanism"] == "dapa" else None,
                 _table(
                     ["Partner", "Courier bid", "Platform bid", "Auction result"]
                     if run["meta"]["mechanism"] == "dapa"
@@ -862,7 +875,7 @@ def _batch_detail(run: dict[str, Any], index: int, page: int = 1) -> Any:
                         "Winner" if award and award["winner"] == bid["platform"] else
                         "Accepted" if run["meta"]["mechanism"] == "ramcom" else "Valid bid"]
                      for bid in bids],
-                ) if bids else html.P("No eligible partner submitted a bid.", className="muted"),
+                ) if bids else html.P("No valid partner bid.", className="muted"),
                 html.Div(
                     f"Selected {award['winner']} · payment {award['payment']:.3f} "
                     f"· {award['valid_bidder_count']} eligible partners" if run["meta"]["mechanism"] == "ramcom"
@@ -876,9 +889,13 @@ def _batch_detail(run: dict[str, Any], index: int, page: int = 1) -> Any:
             html.P("RamCOM chooses the payment with highest expected origin revenue, "
                    "samples partner acceptance, then selects the accepted shortest detour.",
                    className="hint-line") if run["meta"]["mechanism"] == "ramcom" else
+            html.P("Each partner selects its lowest courier bid, then submits one platform bid. "
+                   "The lowest valid platform bid wins; payment is capped at sharing × fare "
+                   "after applying the second-price rule.",
+                   className="hint-line") if run["meta"]["mechanism"] == "dapa" else
             html.P("All eligible partners quote; the lowest valid platform bid wins. "
                    "With two or more valid bids, payment is the second-lowest bid.",
-                   className="hint-line") if run["meta"]["mechanism"] in {"paper", "dapa"} else None,
+                   className="hint-line") if run["meta"]["mechanism"] == "paper" else None,
             *auctions,
         ]) if auctions else html.P("No released parcels entered the auction in this batch.",
                                    className="muted"))

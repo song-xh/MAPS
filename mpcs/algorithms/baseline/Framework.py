@@ -46,7 +46,7 @@ from .Common import (
     request_fare,
 )
 from .LocalSum import LocalSumRule
-from .RLCAPA import RLCAPARule
+from .RLCAPA import NO_LOCAL_WAIT_LIMIT, RLCAPARule
 from .MRA import MRARule
 from .IMPGTA import IMPGTARule
 from .FedLTD import FedLTDRule
@@ -182,7 +182,8 @@ class _LocalAlgorithm(LocalSumRule, RLCAPARule, MRARule, IMPGTARule, FedLTDRule)
                     if request.parcel_id in selected
                     else ParcelAction.WAIT
                     if self.method is BaselineMethod.RL_CAPA
-                    and self.last_no_local_checks.get(request.parcel_id, 10) < 10
+                    and self.last_no_local_checks.get(request.parcel_id, NO_LOCAL_WAIT_LIMIT)
+                    < NO_LOCAL_WAIT_LIMIT
                     else unmatched_action
                 ),
             )
@@ -250,7 +251,7 @@ class _LocalAlgorithm(LocalSumRule, RLCAPARule, MRARule, IMPGTARule, FedLTDRule)
         self,
         frame: DecisionFrameRef,
     ) -> frozenset[str]:
-        """Return EVs reserved by this algorithm's local plan in ``frame``."""
+        """Return couriers reserved by this algorithm's local plan in ``frame``."""
         plan = self.cache.get_for_frame(frame)
         if plan is None:
             return frozenset()

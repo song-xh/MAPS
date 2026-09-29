@@ -93,12 +93,13 @@ def test_capa_prioritizes_value_retries_other_courier_and_releases_below_thresho
         config=BaselineConfig(),
     )
     constrained = PlatformObservation(
-        frame=frame, platform_id="P1", waiting_pickups=parcels[:2],
+        frame=frame, platform_id="P1", waiting_pickups=parcels,
         vehicles=vehicles[:1], station_queues=(),
     )
     constrained_batch = only_one_courier.decide(
         SimpleNamespace(raw_environment_observation=constrained))
     constrained_actions = {item.parcel_id: item.action.name
                            for item in constrained_batch.decisions}
-    assert constrained_actions == {"mid": "WAIT", "high": "LOCAL"}
+    assert constrained_actions == {"mid": "WAIT", "high": "LOCAL", "low": "RELEASE"}
     assert only_one_courier.last_no_local_checks["mid"] == 1
+    assert "low" not in only_one_courier.last_no_local_checks

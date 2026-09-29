@@ -1317,6 +1317,7 @@ class OpaqueAuctionAward:
     winner_bid_amount: float
     valid_bidder_count: int
     decision_frame_id: str
+    pricing_rule: str = "reverse-vickrey-v1"
 
     def __post_init__(self) -> None:
         _require_ids(
@@ -1328,7 +1329,9 @@ class OpaqueAuctionAward:
         _require_nonnegative_finite("payment_amount", self.payment_amount)
         _require_nonnegative_finite("winner_bid_amount", self.winner_bid_amount)
         _require_positive_int("valid_bidder_count", self.valid_bidder_count)
-        if self.payment_amount < self.winner_bid_amount and not isclose(
+        if self.pricing_rule not in {"reverse-vickrey-v1", "capped-dapa-v1"}:
+            raise ValueError("unknown cross-platform pricing rule")
+        if self.pricing_rule == "reverse-vickrey-v1" and self.payment_amount < self.winner_bid_amount and not isclose(
             self.payment_amount,
             self.winner_bid_amount,
             rel_tol=1e-9,
@@ -1361,13 +1364,11 @@ class CrossEconomicTerms:
             "winner_bid_amount",
             self.winner_bid_amount,
         )
-        if self.contract_version != "reverse-vickrey-v1":
-            raise ValueError(
-                "contract_version must be 'reverse-vickrey-v1'"
-            )
+        if self.contract_version not in {"reverse-vickrey-v1", "capped-dapa-v1"}:
+            raise ValueError("unknown cross-platform contract version")
         if self.payment_amount > self.fare_amount:
             raise ValueError("payment exceeds fare")
-        if self.winner_bid_amount > self.payment_amount and not isclose(
+        if self.contract_version == "reverse-vickrey-v1" and self.winner_bid_amount > self.payment_amount and not isclose(
             self.winner_bid_amount,
             self.payment_amount,
             rel_tol=1e-9,
@@ -1423,10 +1424,8 @@ class Assignment:
                 "frozen_travel_cost_amount",
                 self.frozen_travel_cost_amount,
             )
-            if self.economics_contract_version != "reverse-vickrey-v1":
-                raise ValueError(
-                    "economics_contract_version must be 'reverse-vickrey-v1'"
-                )
+            if self.economics_contract_version not in {"reverse-vickrey-v1", "capped-dapa-v1"}:
+                raise ValueError("unknown assignment economics contract version")
         if self.committed_route_version is not None:
             _require_positive_int(
                 "committed_route_version",
